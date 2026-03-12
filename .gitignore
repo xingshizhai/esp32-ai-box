@@ -54,3 +54,13 @@ dkms.conf
 # debug information files
 *.dwo
 build
+managed_components
+*.lock
+.vscode
+.cache
+*.mp3
+DEBUG_GUIDE.md
+sdkconfig
+sdkconfig.old
+tmp
+

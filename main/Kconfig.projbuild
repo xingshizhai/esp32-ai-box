@@ -1,0 +1,81 @@
+menu "Ai-Box Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            WiFi SSID used on first boot (before NVS is configured)
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WiFi password used on first boot (before NVS is configured)
+
+    choice AI_PROVIDER
+        prompt "AI Provider"
+        default AI_PROVIDER_DEEPSEEK
+        help
+            Select the AI provider to use
+
+        config AI_PROVIDER_OPENAI
+            bool "OpenAI (requires proxy in China)"
+        config AI_PROVIDER_ZHIPU
+            bool "Zhipu AI (GLM)"
+        config AI_PROVIDER_DEEPSEEK
+            bool "DeepSeek (recommended for China)"
+    endchoice
+
+    config DEFAULT_API_KEY
+        string "Default API Key"
+        default ""
+        help
+            API key for the selected AI provider
+
+    config DEFAULT_BASE_URL
+        string "Default Base URL"
+        default "https://api.deepseek.com/v1/chat/completions"
+        help
+            Base URL for the AI API
+
+    config DEFAULT_MODEL
+        string "Default Model Name"
+        default "deepseek-chat"
+        help
+            Model name to use
+
+    config MAX_TOKENS
+        int "Max Tokens"
+        default 2000
+        range 100 4096
+        help
+            Maximum number of tokens in AI response
+
+    config TEMPERATURE
+        float "Temperature"
+        default 0.7
+        range 0.0 2.0
+        help
+            Sampling temperature (0.0-2.0)
+
+    config HISTORY_LIMIT
+        int "Conversation History Limit"
+        default 10
+        range 1 20
+        help
+            Maximum number of messages in conversation history
+
+    config WIFI_MAX_RETRY
+        int "WiFi Max Retry"
+        default 5
+        help
+            Maximum number of WiFi connection retries
+
+    config VOLUM
+        int "Default Volume"
+        default 80
+        range 0 100
+        help
+            Default audio volume (0-100)
+
+endmenu
