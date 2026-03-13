@@ -1,9 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2024 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: CC0-1.0
- */
-
 #include "ai_service.h"
 #include "config.h"
 #include "providers/openai.h"

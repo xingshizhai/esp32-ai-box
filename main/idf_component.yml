@@ -17,4 +17,6 @@ dependencies:
   espressif/cjson: '*'
   espressif/esp_lvgl_port: '*'
   espressif/esp_codec_dev: '*'
+  espressif/esp_lcd_ili9341: '*'
+  espressif/esp_lcd_touch_gt911: '*'
   espressif/esp_lcd_touch_tt21100: '*'

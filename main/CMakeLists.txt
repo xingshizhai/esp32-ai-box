@@ -10,6 +10,7 @@ idf_component_register(
         network
         ui
         audio
+        storage
         esp_psram
         esp_adc
         esp_lcd

@@ -78,4 +78,104 @@ menu "Ai-Box Configuration"
         help
             Default audio volume (0-100)
 
+    config SDCARD_ENABLED
+        bool "Enable SD Card Support"
+        default n
+        help
+            Enable SD card (SDMMC) driver and debug menu entries.
+            Disable if your board does not have an SD card slot or
+            if the SD card GPIO pins conflict with other peripherals.
+
+    menu "Audio Hardware Configuration"
+
+        config AUDIO_I2S_MCLK_GPIO
+            int "I2S MCLK GPIO (-1 = not used)"
+            default 2
+            range -1 48
+            help
+                GPIO number for I2S MCLK (master clock). Set to -1 if not connected.
+
+        config AUDIO_I2S_BCLK_GPIO
+            int "I2S BCLK GPIO"
+            default 17
+            range 0 48
+            help
+                GPIO number for I2S bit clock.
+
+        config AUDIO_I2S_WS_GPIO
+            int "I2S WS (LRCK) GPIO"
+            default 45
+            range 0 48
+            help
+                GPIO number for I2S word select / left-right clock.
+
+        config AUDIO_I2S_DOUT_GPIO
+            int "I2S DOUT GPIO (ESP -> codec speaker)"
+            default 15
+            range 0 48
+            help
+                GPIO number for I2S data output (to codec DAC input).
+
+        config AUDIO_I2S_DIN_GPIO
+            int "I2S DIN GPIO (codec mic -> ESP)"
+            default 16
+            range 0 48
+            help
+                GPIO number for I2S data input (from codec ADC output).
+
+        config AUDIO_CODEC_I2C_PORT
+            int "Codec I2C port number"
+            default 1
+            range 0 1
+            help
+                I2C port used for codec control (ES8311/ES7210).
+                Use a separate port from touch if possible.
+                On ESP-BOX-3 compatible hardware use port 1.
+
+        config AUDIO_CODEC_I2C_SCL_GPIO
+            int "Codec I2C SCL GPIO"
+            default 18
+            range 0 48
+            help
+                GPIO number for codec control I2C SCL.
+
+        config AUDIO_CODEC_I2C_SDA_GPIO
+            int "Codec I2C SDA GPIO"
+            default 8
+            range 0 48
+            help
+                GPIO number for codec control I2C SDA.
+
+        config AUDIO_ES8311_I2C_ADDR
+            hex "ES8311 I2C address (7-bit or 8-bit)"
+            default 0x18
+            help
+                Codec I2C address for ES8311.
+                You can input 7-bit address (0x18) or 8-bit address (0x30).
+                The firmware normalizes 7-bit value to 8-bit internally.
+
+        config AUDIO_ES7210_I2C_ADDR
+            hex "ES7210 I2C address (7-bit or 8-bit)"
+            default 0x40
+            help
+                Codec I2C address for ES7210.
+                You can input 7-bit address (0x40) or 8-bit address (0x80).
+                The firmware normalizes 7-bit value to 8-bit internally.
+
+        config AUDIO_PA_GPIO
+            int "Power Amplifier enable GPIO (-1 = not used)"
+            default 46
+            range -1 48
+            help
+                GPIO to drive the external power amplifier enable pin.
+                Set to -1 if there is no PA chip or it is always-on.
+
+        config AUDIO_PA_INVERTED
+            bool "Power Amplifier pin active-low"
+            default n
+            help
+                If enabled the PA is turned on when the GPIO is driven low.
+
+    endmenu
+
 endmenu
