@@ -13,10 +13,10 @@ menu "Ai-Box Configuration"
             WiFi password used on first boot (before NVS is configured)
 
     choice AI_PROVIDER
-        prompt "AI Provider"
+        prompt "Default Chat Provider"
         default AI_PROVIDER_DEEPSEEK
         help
-            Select the AI provider to use
+            Select the default chat provider to use.
 
         config AI_PROVIDER_OPENAI
             bool "OpenAI (requires proxy in China)"
@@ -26,23 +26,315 @@ menu "Ai-Box Configuration"
             bool "DeepSeek (recommended for China)"
     endchoice
 
-    config DEFAULT_API_KEY
-        string "Default API Key"
-        default ""
-        help
-            API key for the selected AI provider
+    menu "Chat Provider Profiles"
 
-    config DEFAULT_BASE_URL
-        string "Default Base URL"
-        default "https://api.deepseek.com/v1/chat/completions"
-        help
-            Base URL for the AI API
+        config OPENAI_API_KEY_DEFAULT
+            string "OpenAI API Key"
+            default ""
+            help
+                API key used when provider is set to OpenAI.
 
-    config DEFAULT_MODEL
-        string "Default Model Name"
-        default "deepseek-chat"
-        help
-            Model name to use
+        config OPENAI_BASE_URL_DEFAULT
+            string "OpenAI Base URL"
+            default "https://api.openai.com/v1/chat/completions"
+            help
+                OpenAI-compatible chat completion endpoint.
+
+        config OPENAI_MODEL_DEFAULT
+            string "OpenAI Default Model"
+            default "gpt-4o-mini"
+            help
+                Model name used for OpenAI provider.
+
+        config ZHIPU_API_KEY_DEFAULT
+            string "Zhipu API Key"
+            default ""
+            help
+                API key used when provider is set to Zhipu.
+
+        config ZHIPU_BASE_URL_DEFAULT
+            string "Zhipu Base URL"
+            default "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            help
+                Chat completion endpoint for Zhipu AI.
+
+        config ZHIPU_MODEL_DEFAULT
+            string "Zhipu Default Model"
+            default "glm-4-flash"
+            help
+                Model name used for Zhipu provider.
+
+        config DEEPSEEK_API_KEY_DEFAULT
+            string "DeepSeek API Key"
+            default ""
+            help
+                API key used when provider is set to DeepSeek.
+
+        config DEEPSEEK_BASE_URL_DEFAULT
+            string "DeepSeek Base URL"
+            default "https://api.deepseek.com/v1/chat/completions"
+            help
+                Chat completion endpoint for DeepSeek.
+
+        config DEEPSEEK_MODEL_DEFAULT
+            string "DeepSeek Default Model"
+            default "deepseek-chat"
+            help
+                Model name used for DeepSeek provider.
+
+    endmenu
+
+    menu "Voice Configuration"
+
+        menu "Voice Provider Profiles"
+
+            config VOICE_VOLCENGINE_APP_ID
+                string "Volcengine APP ID"
+                default ""
+                help
+                    Volcengine application ID for voice services.
+
+            config VOICE_VOLCENGINE_ACCESS_TOKEN
+                string "Volcengine Access Token"
+                default ""
+                help
+                    Volcengine access token for voice services.
+
+            config VOICE_VOLCENGINE_SECRET_KEY
+                string "Volcengine Secret Key"
+                default ""
+                help
+                    Volcengine secret key for voice services.
+
+            config VOICE_VOLCENGINE_STT_BASE_URL
+                string "Volcengine STT Base URL"
+                default "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+                help
+                    Upstream STT endpoint for Volcengine provider.
+                    Recommended: bigmodel_async endpoint from Volcengine docs.
+
+            config VOICE_VOLCENGINE_STT_MODEL
+                string "Volcengine STT Model"
+                default "bigmodel"
+                help
+                    STT model used by Volcengine provider.
+                    Current supported value: bigmodel.
+
+            config VOICE_VOLCENGINE_TTS_BASE_URL
+                string "Volcengine TTS Base URL"
+                default "https://openspeech.bytedance.com/api/v1/tts"
+                help
+                    Upstream TTS endpoint for Volcengine provider.
+                    HTTP (non-stream): https://openspeech.bytedance.com/api/v1/tts
+                    WebSocket (stream): wss://openspeech.bytedance.com/api/v1/tts/ws_binary
+
+            config VOICE_VOLCENGINE_TTS_VOICE
+                string "Volcengine TTS Voice"
+                default ""
+                help
+                    Voice identifier used by Volcengine TTS.
+
+            config VOICE_ALIYUN_API_KEY
+                string "Aliyun API Key"
+                default ""
+                help
+                    API key used by Aliyun voice services.
+
+            config VOICE_ALIYUN_STT_BASE_URL
+                string "Aliyun STT Base URL"
+                default ""
+                help
+                    Upstream STT endpoint for Aliyun provider.
+
+            config VOICE_ALIYUN_STT_MODEL
+                string "Aliyun STT Model"
+                default ""
+                help
+                    STT model used by Aliyun provider.
+
+            config VOICE_ALIYUN_TTS_BASE_URL
+                string "Aliyun TTS Base URL"
+                default ""
+                help
+                    Upstream TTS endpoint for Aliyun provider.
+
+            config VOICE_ALIYUN_TTS_VOICE
+                string "Aliyun TTS Voice/Model"
+                default ""
+                help
+                    Voice or model identifier used by Aliyun TTS.
+
+            config VOICE_CUSTOM_API_KEY
+                string "Custom Provider API Key"
+                default ""
+                help
+                    API key used by custom voice provider.
+
+            config VOICE_CUSTOM_STT_BASE_URL
+                string "Custom STT Base URL"
+                default ""
+                help
+                    Upstream STT endpoint for custom provider.
+
+            config VOICE_CUSTOM_STT_MODEL
+                string "Custom STT Model"
+                default ""
+                help
+                    STT model used by custom provider.
+
+            config VOICE_CUSTOM_TTS_BASE_URL
+                string "Custom TTS Base URL"
+                default ""
+                help
+                    Upstream TTS endpoint for custom provider.
+
+            config VOICE_CUSTOM_TTS_VOICE
+                string "Custom TTS Voice/Model"
+                default ""
+                help
+                    Voice or model identifier used by custom TTS.
+
+        endmenu
+
+        menu "Speech-to-Text (STT)"
+
+            choice STT_PROVIDER
+                prompt "Default STT Provider"
+                default STT_PROVIDER_VOLCENGINE
+                help
+                    Select the default speech-to-text provider.
+
+                config STT_PROVIDER_VOLCENGINE
+                    bool "Volcengine"
+                config STT_PROVIDER_ALIYUN
+                    bool "Aliyun"
+                config STT_PROVIDER_CUSTOM
+                    bool "Custom"
+            endchoice
+
+            menu "Volcengine STT Advanced"
+                depends on STT_PROVIDER_VOLCENGINE
+
+                config VOLCENGINE_STT_LANGUAGE
+                    string "Volcengine STT Language"
+                    default "zh-CN"
+                    help
+                        Language value sent in Volcengine audio config, e.g. zh-CN / en-US.
+
+                config VOLCENGINE_STT_ENABLE_ITN
+                    bool "Volcengine STT Enable ITN"
+                    default y
+                    help
+                        Enable inverse text normalization in Volcengine ASR request.
+
+                config VOLCENGINE_STT_ENABLE_PUNC
+                    bool "Volcengine STT Enable Punctuation"
+                    default y
+                    help
+                        Enable punctuation prediction in Volcengine ASR request.
+
+                config VOLCENGINE_STT_ENABLE_NONSTREAM
+                    bool "Volcengine STT Enable Nonstream Second Pass"
+                    default n
+                    help
+                        Enable stream+nonstream second-pass recognition (higher accuracy, more latency).
+
+                config VOLCENGINE_STT_RESULT_TYPE
+                    string "Volcengine STT Result Type"
+                    default "full"
+                    help
+                        Result type passed to Volcengine request: full or single.
+
+                config VOLCENGINE_STT_END_WINDOW_SIZE_MS
+                    int "Volcengine STT End Window Size (ms)"
+                    default 800
+                    range 200 5000
+                    help
+                        Forced stop window for Volcengine streaming sentence finalization.
+            endmenu
+
+        endmenu
+
+        menu "Text-to-Speech (TTS)"
+
+            choice TTS_PROVIDER
+                prompt "Default TTS Provider"
+                default TTS_PROVIDER_VOLCENGINE
+                help
+                    Select the default text-to-speech provider.
+
+                config TTS_PROVIDER_VOLCENGINE
+                    bool "Volcengine"
+                config TTS_PROVIDER_ALIYUN
+                    bool "Aliyun"
+                config TTS_PROVIDER_CUSTOM
+                    bool "Custom"
+            endchoice
+
+        endmenu
+
+        menu "Voice Gateway"
+
+            config ENABLE_VOICE_GATEWAY
+                bool "Enable Voice Gateway by default"
+                default y
+                help
+                    If enabled, speech requests are routed through a dedicated gateway service.
+
+            config DEFAULT_VOICE_GATEWAY_URL
+                string "Default Voice Gateway URL"
+                default ""
+                help
+                    Voice gateway endpoint (recommended for mainland China deployments).
+
+            config DEFAULT_VOICE_GATEWAY_TOKEN
+                string "Default Voice Gateway Token"
+                default ""
+                help
+                    Optional static token used to authenticate against the voice gateway.
+
+        endmenu
+
+        menu "Voice Runtime"
+
+            config ENABLE_BARGE_IN
+                bool "Enable barge-in by default"
+                default y
+                help
+                    Allow user speech to interrupt TTS playback.
+
+            config VAD_SILENCE_MS
+                int "Default VAD silence threshold (ms)"
+                default 800
+                range 100 5000
+                help
+                    Silence duration before ending a speech segment.
+
+            config STT_TIMEOUT_MS
+                int "Default STT timeout (ms)"
+                default 8000
+                range 500 60000
+                help
+                    Timeout for STT request completion.
+
+            config TTS_TIMEOUT_MS
+                int "Default TTS timeout (ms)"
+                default 12000
+                range 500 60000
+                help
+                    Timeout for TTS request completion.
+
+            config AUDIO_CHUNK_MS
+                int "Default audio upload chunk (ms)"
+                default 200 if STT_PROVIDER_VOLCENGINE
+                default 20
+                range 10 200
+                help
+                    PCM chunk duration sent to STT in streaming mode.
+
+        endmenu
+
+    endmenu
 
     config MAX_TOKENS
         int "Max Tokens"

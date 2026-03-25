@@ -7,8 +7,8 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "providers"
-        "../config"
     REQUIRES
+        config
         esp_http_client
         cjson
 )

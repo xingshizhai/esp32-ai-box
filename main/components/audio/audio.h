@@ -30,6 +30,12 @@ esp_err_t audio_stop_tts(void);
 esp_err_t audio_set_volume(int volume);
 void audio_register_playback_callback(audio_playback_complete_callback_t callback);
 
+/* Stream interfaces for real-time voice chat (mono PCM S16LE, 16 kHz). */
+esp_err_t audio_stream_start_capture(void);
+esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, int *pcm_len);
+esp_err_t audio_stream_stop_capture(void);
+esp_err_t audio_stream_play_chunk(const uint8_t *audio_data, int audio_len);
+
 esp_err_t audio_debug_start_monitor(void);
 esp_err_t audio_debug_stop_monitor(void);
 void audio_register_mic_level_callback(audio_mic_level_callback_t callback);

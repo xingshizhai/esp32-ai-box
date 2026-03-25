@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 
 idf_component_register(
     SRCS "main.c"
+         "app_display.c"
+         "app_runtime.c"
     INCLUDE_DIRS "."
     REQUIRES 
         ai_service
@@ -10,6 +12,7 @@ idf_component_register(
         network
         ui
         audio
+        voice_chat
         storage
         esp_psram
         esp_adc

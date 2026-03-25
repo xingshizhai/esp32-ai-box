@@ -118,6 +118,32 @@ static void play_task(void *arg)
 /* ── Monitor (mic level) task ────────────────────────────────────────── */
 static bool         s_is_monitoring = false;
 static TaskHandle_t s_monitor_task  = NULL;
+static bool         s_stream_capture_active = false;
+static bool         s_stream_capture_resume_monitor = false;
+static int16_t     *s_stream_raw_buf = NULL;
+static int          s_stream_raw_buf_bytes = 0;
+static int          s_stream_selected_ch = -1;
+
+static esp_err_t audio_stream_ensure_raw_buffer(int required_bytes)
+{
+    if (required_bytes <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_stream_raw_buf != NULL && s_stream_raw_buf_bytes >= required_bytes) {
+        return ESP_OK;
+    }
+
+    int16_t *new_buf = realloc(s_stream_raw_buf, required_bytes);
+    if (new_buf == NULL) {
+        ESP_LOGE(TAG, "Stream capture buffer alloc failed (%d bytes)", required_bytes);
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_stream_raw_buf = new_buf;
+    s_stream_raw_buf_bytes = required_bytes;
+    return ESP_OK;
+}
 
 static esp_err_t audio_refresh_mic_input(void)
 {
@@ -540,6 +566,11 @@ esp_err_t audio_play_tts(const uint8_t *audio_data, int audio_len)
     return ESP_OK;
 }
 
+esp_err_t audio_stream_play_chunk(const uint8_t *audio_data, int audio_len)
+{
+    return audio_play_tts(audio_data, audio_len);
+}
+
 esp_err_t audio_debug_play_owned_sample(uint8_t **data, int *len)
 {
     if (data == NULL || len == NULL || *data == NULL || *len <= 0) {
@@ -622,6 +653,10 @@ esp_err_t audio_debug_start_monitor(void)
         ESP_LOGW(TAG, "Mic monitor unavailable: audio hardware not ready");
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_stream_capture_active) {
+        ESP_LOGW(TAG, "Mic monitor unavailable: stream capture is active");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_is_monitoring) {
         ESP_LOGW(TAG, "Mic monitor already running");
         return ESP_OK;
@@ -656,6 +691,112 @@ void audio_register_mic_level_callback(audio_mic_level_callback_t callback)
     s_mic_level_callback = callback;
 }
 
+esp_err_t audio_stream_start_capture(void)
+{
+    if (!s_hw_ready || s_mic_dev == NULL) {
+        ESP_LOGW(TAG, "Stream capture unavailable: audio hardware not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_stream_capture_active) {
+        return ESP_OK;
+    }
+
+    s_stream_capture_resume_monitor = false;
+    if (s_is_monitoring) {
+        audio_debug_stop_monitor();
+        s_stream_capture_resume_monitor = true;
+    }
+
+    esp_err_t ret = audio_refresh_mic_input();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Stream capture start: mic refresh failed: %s", esp_err_to_name(ret));
+    }
+
+    s_stream_selected_ch = -1;
+    s_stream_capture_active = true;
+    ESP_LOGI(TAG, "Stream capture started");
+    return ESP_OK;
+}
+
+esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, int *pcm_len)
+{
+    if (pcm_data == NULL || pcm_len == NULL || pcm_capacity < BYTES_PER_SAMPLE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_stream_capture_active || !s_hw_ready || s_mic_dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int frames_to_read = pcm_capacity / BYTES_PER_SAMPLE;
+    if (frames_to_read <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int raw_bytes_to_read = frames_to_read * MIC_CHANNELS * BYTES_PER_SAMPLE;
+    esp_err_t mem_ret = audio_stream_ensure_raw_buffer(raw_bytes_to_read);
+    if (mem_ret != ESP_OK) {
+        return mem_ret;
+    }
+
+    int read_rc = esp_codec_dev_read(s_mic_dev, s_stream_raw_buf, raw_bytes_to_read);
+    if (read_rc != ESP_CODEC_DEV_OK) {
+        esp_err_t refresh_ret = audio_refresh_mic_input();
+        if (refresh_ret == ESP_OK) {
+            read_rc = esp_codec_dev_read(s_mic_dev, s_stream_raw_buf, raw_bytes_to_read);
+        }
+    }
+    if (read_rc != ESP_CODEC_DEV_OK) {
+        ESP_LOGW(TAG, "Stream capture read failed: %d", read_rc);
+        return ESP_FAIL;
+    }
+
+    if (s_stream_selected_ch < 0) {
+        long long energy_l = 0;
+        long long energy_r = 0;
+        for (int i = 0; i < frames_to_read; i++) {
+            int l = s_stream_raw_buf[i * MIC_CHANNELS + 0];
+            int r = s_stream_raw_buf[i * MIC_CHANNELS + 1];
+            energy_l += (l < 0) ? -l : l;
+            energy_r += (r < 0) ? -r : r;
+        }
+        s_stream_selected_ch = (energy_r > energy_l) ? 1 : 0;
+        ESP_LOGI(TAG, "Stream capture channel selected: %c (energy L=%lld R=%lld)",
+                 s_stream_selected_ch ? 'R' : 'L', energy_l, energy_r);
+    }
+
+    int16_t *mono = (int16_t *)pcm_data;
+    for (int i = 0; i < frames_to_read; i++) {
+        mono[i] = s_stream_raw_buf[i * MIC_CHANNELS + s_stream_selected_ch];
+    }
+
+    *pcm_len = frames_to_read * BYTES_PER_SAMPLE;
+    return ESP_OK;
+}
+
+esp_err_t audio_stream_stop_capture(void)
+{
+    if (!s_stream_capture_active) {
+        return ESP_OK;
+    }
+
+    s_stream_capture_active = false;
+    s_stream_selected_ch = -1;
+
+    if (s_stream_raw_buf != NULL) {
+        free(s_stream_raw_buf);
+        s_stream_raw_buf = NULL;
+        s_stream_raw_buf_bytes = 0;
+    }
+
+    if (s_stream_capture_resume_monitor) {
+        s_stream_capture_resume_monitor = false;
+        (void)audio_debug_start_monitor();
+    }
+
+    ESP_LOGI(TAG, "Stream capture stopped");
+    return ESP_OK;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * Debug: record audio sample from real microphone
  * ════════════════════════════════════════════════════════════════════ */
@@ -663,6 +804,10 @@ esp_err_t audio_debug_record_sample(uint8_t **data, int *len)
 {
     if (data == NULL || len == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_stream_capture_active) {
+        ESP_LOGW(TAG, "Record sample unavailable: stream capture is active");
+        return ESP_ERR_INVALID_STATE;
     }
 
     static const int capture_ms_candidates[] = {5000, 3000, 1500, 1000, 500};

@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "voice_session.c"
+        "voice_gateway_client.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        freertos
+        esp_common
+        esp_http_client
+        cjson
+)

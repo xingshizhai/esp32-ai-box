@@ -12,6 +12,7 @@ static lv_obj_t *s_settings_panel = NULL;
 static lv_obj_t *s_loading_panel = NULL;
 static lv_obj_t *s_debug_panel = NULL;
 static bool s_ui_initialized = false;
+static ui_main_action_callback_t s_main_action_cb = NULL;
 
 static const char *ui_event_code_to_str(lv_event_code_t code)
 {
@@ -95,6 +96,14 @@ static void ui_main_panel_event_cb(lv_event_t *event)
     lv_event_code_t code = lv_event_get_code(event);
     if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         ESP_LOGI(TAG, "Main panel touch event: %s", ui_event_code_to_str(code));
+    }
+
+    if (ui_is_activate_event(code) && s_main_action_cb != NULL) {
+        lv_obj_t *target = lv_event_get_target(event);
+        lv_obj_t *current_target = lv_event_get_current_target(event);
+        if (target == current_target) {
+            s_main_action_cb();
+        }
     }
 }
 
@@ -350,6 +359,12 @@ esp_err_t ui_update_provider(const char *provider_name)
     }
 
     lvgl_port_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback)
+{
+    s_main_action_cb = callback;
     return ESP_OK;
 }
 

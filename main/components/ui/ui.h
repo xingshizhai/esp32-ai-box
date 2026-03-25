@@ -17,12 +17,14 @@ typedef enum {
 
 typedef void (*ui_debug_action_callback_t)(void);
 typedef void (*ui_debug_volume_callback_t)(int volume);
+typedef void (*ui_main_action_callback_t)(void);
 
 esp_err_t ui_init(void);
 esp_err_t ui_show_panel(ui_panel_t panel);
 esp_err_t ui_update_chat_message(const char *user_msg, const char *ai_msg);
 esp_err_t ui_update_status(const char *status);
 esp_err_t ui_update_provider(const char *provider_name);
+esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback);
 void ui_task(void);
 
 esp_err_t ui_debug_update_mic_level(int level);

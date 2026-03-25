@@ -495,7 +495,7 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
     lv_obj_add_flag(s_debug_sd_mp3_view, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *sd_mp3_title = lv_label_create(s_debug_sd_mp3_view);
-    lv_label_set_text(sd_mp3_title, "SD MP3 Stage-1 Test");
+    lv_label_set_text(sd_mp3_title, "Voice Roundtrip / SD MP3");
     lv_obj_align(sd_mp3_title, LV_ALIGN_TOP_MID, 0, 10);
 
     s_debug_sd_mp3_status = lv_label_create(s_debug_sd_mp3_view);
@@ -513,7 +513,7 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
     lv_obj_align(sd_mp3_action_btn, LV_ALIGN_TOP_MID, 0, 118);
     lv_obj_add_event_cb(sd_mp3_action_btn, ui_test_audio_btn_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_t *sd_mp3_action_label = lv_label_create(sd_mp3_action_btn);
-    lv_label_set_text(sd_mp3_action_label, "Verify SD MP3");
+    lv_label_set_text(sd_mp3_action_label, "Run Voice Test");
     lv_obj_center(sd_mp3_action_label);
 
     lv_obj_t *sd_mp3_back_btn = lv_btn_create(s_debug_sd_mp3_view);
