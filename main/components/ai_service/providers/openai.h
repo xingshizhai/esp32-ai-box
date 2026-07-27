@@ -11,6 +11,9 @@ typedef struct {
     char *api_key;
     char *base_url;
     char *model;
+    char *openrouter_http_referer;
+    char *openrouter_x_title;
+    bool use_openrouter_headers;
     float temperature;
     int max_tokens;
     esp_http_client_handle_t http_client;

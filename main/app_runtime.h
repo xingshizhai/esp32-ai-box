@@ -4,6 +4,7 @@
 
 #include "esp_err.h"
 #include "network.h"
+#include "config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,9 @@ extern "C" {
 
 esp_err_t app_runtime_init(bool ui_ready);
 void app_runtime_process_requests(void);
+esp_err_t app_runtime_switch_chat_provider(ai_provider_config_t provider);
+esp_err_t app_runtime_reload_ai_service(void);
+esp_err_t app_runtime_test_chat(const char *prompt);
 
 void app_runtime_request_voice_round(void);
 void app_runtime_request_debug_record(void);

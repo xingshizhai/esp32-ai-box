@@ -2,11 +2,15 @@
 #include "config.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdlib.h>
 
 static const char *TAG = "deepseek_service";
+
+#define DEEPSEEK_HTTP_RX_INIT_CAP  4096
+#define DEEPSEEK_HTTP_RX_MAX_CAP   (256 * 1024)
 
 typedef struct {
     char *api_key;
@@ -16,15 +20,25 @@ typedef struct {
     int max_tokens;
 } deepseek_service_data_t;
 
+typedef struct {
+    char *data;
+    int len;
+    int cap;
+} deepseek_http_buf_t;
+
 static esp_err_t deepseek_service_init(ai_service_t *service, const ai_config_t *config);
 static esp_err_t deepseek_service_chat(ai_service_t *service, const char *user_message, ai_response_t *response);
 static esp_err_t deepseek_service_chat_with_history(ai_service_t *service, ai_message_t *messages, ai_response_t *response);
 static esp_err_t deepseek_service_cleanup(ai_service_t *service);
-static char* build_deepseek_payload(const char *model, const char *user_message, float temperature, int max_tokens);
-static char* build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens);
+static char *build_deepseek_payload(const char *model, const char *user_message, float temperature, int max_tokens);
+static char *build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens);
 static esp_err_t parse_deepseek_response(const char *response_body, ai_response_t *response);
+static esp_err_t deepseek_http_post_json(const deepseek_service_data_t *data,
+                                         const char *payload,
+                                         char **out_body,
+                                         int *out_status);
 
-ai_service_t* deepseek_service_create(void)
+ai_service_t *deepseek_service_create(void)
 {
     ai_service_t *service = (ai_service_t *)calloc(1, sizeof(ai_service_t));
     if (service == NULL) {
@@ -68,6 +82,109 @@ static esp_err_t deepseek_service_init(ai_service_t *service, const ai_config_t 
     return ESP_OK;
 }
 
+static esp_err_t deepseek_http_buf_append(deepseek_http_buf_t *buf, const char *data, int len)
+{
+    if (buf == NULL || data == NULL || len <= 0) {
+        return ESP_OK;
+    }
+
+    if (buf->data == NULL) {
+        buf->cap = DEEPSEEK_HTTP_RX_INIT_CAP;
+        if (buf->cap < len + 1) {
+            buf->cap = len + 1;
+        }
+        buf->data = (char *)malloc((size_t)buf->cap);
+        if (buf->data == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+        buf->len = 0;
+    }
+
+    if (buf->len + len + 1 > buf->cap) {
+        int next_cap = buf->cap;
+        while (next_cap < buf->len + len + 1) {
+            next_cap *= 2;
+            if (next_cap > DEEPSEEK_HTTP_RX_MAX_CAP) {
+                return ESP_ERR_NO_MEM;
+            }
+        }
+        char *resized = (char *)realloc(buf->data, (size_t)next_cap);
+        if (resized == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+        buf->data = resized;
+        buf->cap = next_cap;
+    }
+
+    memcpy(buf->data + buf->len, data, (size_t)len);
+    buf->len += len;
+    buf->data[buf->len] = '\0';
+    return ESP_OK;
+}
+
+static esp_err_t deepseek_http_event_handler(esp_http_client_event_t *evt)
+{
+    deepseek_http_buf_t *buf = (deepseek_http_buf_t *)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        return deepseek_http_buf_append(buf, (const char *)evt->data, evt->data_len);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t deepseek_http_post_json(const deepseek_service_data_t *data,
+                                         const char *payload,
+                                         char **out_body,
+                                         int *out_status)
+{
+    if (data == NULL || payload == NULL || out_body == NULL || out_status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_body = NULL;
+    *out_status = 0;
+
+    deepseek_http_buf_t buf = {0};
+    esp_http_client_config_t http_config = {
+        .url = data->base_url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 30000,
+        .buffer_size = 4096,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .event_handler = deepseek_http_event_handler,
+        .user_data = &buf,
+    };
+
+    esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
+    if (http_client == NULL) {
+        return ESP_FAIL;
+    }
+
+    char auth_header[API_KEY_SIZE + 16];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", data->api_key);
+    esp_http_client_set_header(http_client, "Content-Type", "application/json");
+    esp_http_client_set_header(http_client, "Authorization", auth_header);
+    esp_http_client_set_post_field(http_client, payload, (int)strlen(payload));
+
+    esp_err_t err = esp_http_client_perform(http_client);
+    *out_status = esp_http_client_get_status_code(http_client);
+    esp_http_client_cleanup(http_client);
+
+    if (err != ESP_OK) {
+        free(buf.data);
+        return err;
+    }
+
+    if (buf.data == NULL) {
+        buf.data = strdup("");
+        if (buf.data == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    *out_body = buf.data;
+    return ESP_OK;
+}
+
 static esp_err_t deepseek_service_chat(ai_service_t *service, const char *user_message, ai_response_t *response)
 {
     if (service == NULL || service->private_data == NULL) {
@@ -80,60 +197,31 @@ static esp_err_t deepseek_service_chat(ai_service_t *service, const char *user_m
         return ESP_ERR_NO_MEM;
     }
 
-    esp_http_client_config_t http_config = {
-        .url = data->base_url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 30000,
-        .buffer_size = 4096,
-    };
-
-    esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
-    if (http_client == NULL) {
-        free(payload);
-        return ESP_FAIL;
-    }
-
-    char auth_header[256];
-    snprintf(auth_header, sizeof(auth_header), "Bearer %s", data->api_key);
-
-    esp_http_client_set_header(http_client, "Content-Type", "application/json");
-    esp_http_client_set_header(http_client, "Authorization", auth_header);
-    esp_http_client_set_post_field(http_client, payload, strlen(payload));
-
-    esp_err_t err = esp_http_client_perform(http_client);
+    char *response_body = NULL;
+    int status = 0;
+    esp_err_t err = deepseek_http_post_json(data, payload, &response_body, &status);
+    free(payload);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
-        free(payload);
-        esp_http_client_cleanup(http_client);
+        free(response_body);
         return err;
     }
 
-    int status = esp_http_client_get_status_code(http_client);
-    int content_length = esp_http_client_get_content_length(http_client);
-
     if (status != 200) {
-        ESP_LOGE(TAG, "HTTP error: %d", status);
-        free(payload);
-        esp_http_client_cleanup(http_client);
+        ESP_LOGE(TAG, "HTTP error: %d body=%.200s", status, response_body ? response_body : "");
+        if (response != NULL) {
+            snprintf(response->error_msg,
+                     sizeof(response->error_msg),
+                     "HTTP %d: %.220s",
+                     status,
+                     (response_body && response_body[0]) ? response_body : "empty");
+        }
+        free(response_body);
         return ESP_FAIL;
     }
 
-    char *response_body = (char *)malloc(content_length + 1);
-    if (response_body == NULL) {
-        free(payload);
-        esp_http_client_cleanup(http_client);
-        return ESP_ERR_NO_MEM;
-    }
-
-    int read_len = esp_http_client_read(http_client, response_body, content_length);
-    response_body[read_len] = '\0';
-
-    free(payload);
-    esp_http_client_cleanup(http_client);
-
     err = parse_deepseek_response(response_body, response);
     free(response_body);
-
     return err;
 }
 
@@ -149,60 +237,34 @@ static esp_err_t deepseek_service_chat_with_history(ai_service_t *service, ai_me
         return ESP_ERR_NO_MEM;
     }
 
-    esp_http_client_config_t http_config = {
-        .url = data->base_url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 30000,
-        .buffer_size = 4096,
-    };
+    ESP_LOGI(TAG, "DeepSeek history request bytes=%u model=%s max_tokens=%d",
+             (unsigned)strlen(payload), data->model, data->max_tokens);
 
-    esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
-    if (http_client == NULL) {
-        free(payload);
-        return ESP_FAIL;
-    }
-
-    char auth_header[256];
-    snprintf(auth_header, sizeof(auth_header), "Bearer %s", data->api_key);
-
-    esp_http_client_set_header(http_client, "Content-Type", "application/json");
-    esp_http_client_set_header(http_client, "Authorization", auth_header);
-    esp_http_client_set_post_field(http_client, payload, strlen(payload));
-
-    esp_err_t err = esp_http_client_perform(http_client);
+    char *response_body = NULL;
+    int status = 0;
+    esp_err_t err = deepseek_http_post_json(data, payload, &response_body, &status);
+    free(payload);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
-        free(payload);
-        esp_http_client_cleanup(http_client);
+        free(response_body);
         return err;
     }
 
-    int status = esp_http_client_get_status_code(http_client);
-    int content_length = esp_http_client_get_content_length(http_client);
-
     if (status != 200) {
-        ESP_LOGE(TAG, "HTTP error: %d", status);
-        free(payload);
-        esp_http_client_cleanup(http_client);
+        ESP_LOGE(TAG, "HTTP error: %d body=%.200s", status, response_body ? response_body : "");
+        if (response != NULL) {
+            snprintf(response->error_msg,
+                     sizeof(response->error_msg),
+                     "HTTP %d: %.220s",
+                     status,
+                     (response_body && response_body[0]) ? response_body : "empty");
+        }
+        free(response_body);
         return ESP_FAIL;
     }
 
-    char *response_body = (char *)malloc(content_length + 1);
-    if (response_body == NULL) {
-        free(payload);
-        esp_http_client_cleanup(http_client);
-        return ESP_ERR_NO_MEM;
-    }
-
-    int read_len = esp_http_client_read(http_client, response_body, content_length);
-    response_body[read_len] = '\0';
-
-    free(payload);
-    esp_http_client_cleanup(http_client);
-
     err = parse_deepseek_response(response_body, response);
     free(response_body);
-
     return err;
 }
 
@@ -214,23 +276,16 @@ static esp_err_t deepseek_service_cleanup(ai_service_t *service)
 
     deepseek_service_data_t *data = (deepseek_service_data_t *)service->private_data;
 
-    if (data->api_key != NULL) {
-        free(data->api_key);
-    }
-    if (data->base_url != NULL) {
-        free(data->base_url);
-    }
-    if (data->model != NULL) {
-        free(data->model);
-    }
-
+    free(data->api_key);
+    free(data->base_url);
+    free(data->model);
     free(data);
     service->private_data = NULL;
 
     return ESP_OK;
 }
 
-static char* build_deepseek_payload(const char *model, const char *user_message, float temperature, int max_tokens)
+static char *build_deepseek_payload(const char *model, const char *user_message, float temperature, int max_tokens)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *messages = cJSON_CreateArray();
@@ -247,11 +302,10 @@ static char* build_deepseek_payload(const char *model, const char *user_message,
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-
     return payload;
 }
 
-static char* build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens)
+static char *build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *msg_array = cJSON_CreateArray();
@@ -272,7 +326,6 @@ static char* build_deepseek_history_payload(const char *model, ai_message_t *mes
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-
     return payload;
 }
 

@@ -10,5 +10,6 @@ idf_component_register(
     REQUIRES
         config
         esp_http_client
+        mbedtls
         cjson
 )

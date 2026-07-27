@@ -64,3 +64,17 @@ sdkconfig
 sdkconfig.old
 tmp
 
+# Local ESP-IDF machine config (copy from idf-env.example.*)
+idf-env.ps1
+idf-env.bat
+
+# Local voice API secrets / artifacts
+tools/voice/.env.local
+tools/voice/out/
+
+# Local Python venv and debug screenshots
+tools/venv/
+tools/screenshot/screenshots/
+tools/**/__pycache__/
+*.png
+

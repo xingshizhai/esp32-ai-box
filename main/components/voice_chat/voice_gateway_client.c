@@ -14,9 +14,16 @@ static const char *TAG = "voice_gateway";
 #define VOICE_STT_STOP_PATH       "/v1/stt/stop"
 #define VOICE_TTS_PATH            "/v1/tts"
 
-#define VOICE_HTTP_TIMEOUT_MS     15000
+#define VOICE_HTTP_TIMEOUT_MS     60000
 #define VOICE_HTTP_RX_INIT_CAP    2048
 #define VOICE_HTTP_RX_MAX_CAP     (512 * 1024)
+
+typedef struct {
+    uint8_t *data;
+    int len;
+    int cap;
+    bool overflow;
+} voice_http_rx_buf_t;
 
 struct voice_gateway_client {
     char *base_url;
@@ -109,6 +116,70 @@ static esp_err_t voice_build_url(const voice_gateway_client_t *client,
     return ESP_OK;
 }
 
+static bool voice_http_rx_append(voice_http_rx_buf_t *buf, const uint8_t *data, int len)
+{
+    if (buf == NULL || data == NULL || len <= 0) {
+        return true;
+    }
+    if (buf->overflow) {
+        return false;
+    }
+
+    if (buf->data == NULL) {
+        int cap = VOICE_HTTP_RX_INIT_CAP;
+        while (cap < len && cap < VOICE_HTTP_RX_MAX_CAP) {
+            cap *= 2;
+        }
+        if (cap < len) {
+            buf->overflow = true;
+            return false;
+        }
+        buf->data = (uint8_t *)malloc((size_t)cap + 1);
+        if (buf->data == NULL) {
+            buf->overflow = true;
+            return false;
+        }
+        buf->cap = cap;
+        buf->len = 0;
+    }
+
+    if (buf->len + len > buf->cap) {
+        int next_cap = buf->cap;
+        while (next_cap < buf->len + len && next_cap < VOICE_HTTP_RX_MAX_CAP) {
+            next_cap *= 2;
+        }
+        if (next_cap < buf->len + len) {
+            buf->overflow = true;
+            return false;
+        }
+        uint8_t *grown = (uint8_t *)realloc(buf->data, (size_t)next_cap + 1);
+        if (grown == NULL) {
+            buf->overflow = true;
+            return false;
+        }
+        buf->data = grown;
+        buf->cap = next_cap;
+    }
+
+    memcpy(buf->data + buf->len, data, (size_t)len);
+    buf->len += len;
+    buf->data[buf->len] = '\0';
+    return true;
+}
+
+static esp_err_t voice_http_event_handler(esp_http_client_event_t *evt)
+{
+    if (evt == NULL || evt->user_data == NULL) {
+        return ESP_OK;
+    }
+
+    voice_http_rx_buf_t *buf = (voice_http_rx_buf_t *)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data != NULL && evt->data_len > 0) {
+        (void)voice_http_rx_append(buf, (const uint8_t *)evt->data, evt->data_len);
+    }
+    return ESP_OK;
+}
+
 static esp_err_t voice_http_post(voice_gateway_client_t *client,
                                  const char *url,
                                  const uint8_t *payload,
@@ -129,12 +200,16 @@ static esp_err_t voice_http_post(voice_gateway_client_t *client,
     *resp_len = 0;
     *http_status = 0;
 
+    voice_http_rx_buf_t rx = {0};
+
     esp_http_client_config_t http_cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = (client->timeout_ms > 0) ? client->timeout_ms : VOICE_HTTP_TIMEOUT_MS,
         .buffer_size = 4096,
         .buffer_size_tx = 4096,
+        .event_handler = voice_http_event_handler,
+        .user_data = &rx,
     };
 
     esp_http_client_handle_t http_client = esp_http_client_init(&http_cfg);
@@ -158,69 +233,22 @@ static esp_err_t voice_http_post(voice_gateway_client_t *client,
     }
 
     esp_err_t err = esp_http_client_perform(http_client);
+    *http_status = esp_http_client_get_status_code(http_client);
+    esp_http_client_cleanup(http_client);
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP POST failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(http_client);
+        free(rx.data);
         return err;
     }
-
-    *http_status = esp_http_client_get_status_code(http_client);
-
-    int cap = esp_http_client_get_content_length(http_client);
-    if (cap <= 0) {
-        cap = VOICE_HTTP_RX_INIT_CAP;
-    }
-    if (cap > VOICE_HTTP_RX_MAX_CAP) {
-        cap = VOICE_HTTP_RX_MAX_CAP;
-    }
-
-    uint8_t *body = (uint8_t *)malloc((size_t)cap + 1);
-    if (body == NULL) {
-        esp_http_client_cleanup(http_client);
+    if (rx.overflow) {
+        ESP_LOGE(TAG, "HTTP response exceeds %d bytes", VOICE_HTTP_RX_MAX_CAP);
+        free(rx.data);
         return ESP_ERR_NO_MEM;
     }
 
-    int total = 0;
-    while (1) {
-        int room = cap - total;
-        if (room == 0) {
-            if (cap >= VOICE_HTTP_RX_MAX_CAP) {
-                free(body);
-                esp_http_client_cleanup(http_client);
-                return ESP_ERR_NO_MEM;
-            }
-            int next_cap = cap * 2;
-            if (next_cap > VOICE_HTTP_RX_MAX_CAP) {
-                next_cap = VOICE_HTTP_RX_MAX_CAP;
-            }
-            uint8_t *new_body = (uint8_t *)realloc(body, (size_t)next_cap + 1);
-            if (new_body == NULL) {
-                free(body);
-                esp_http_client_cleanup(http_client);
-                return ESP_ERR_NO_MEM;
-            }
-            body = new_body;
-            cap = next_cap;
-            room = cap - total;
-        }
-
-        int read_len = esp_http_client_read(http_client, (char *)body + total, room);
-        if (read_len < 0) {
-            free(body);
-            esp_http_client_cleanup(http_client);
-            return ESP_FAIL;
-        }
-        if (read_len == 0) {
-            break;
-        }
-        total += read_len;
-    }
-
-    body[total] = '\0';
-    *resp_data = body;
-    *resp_len = total;
-
-    esp_http_client_cleanup(http_client);
+    *resp_data = rx.data;
+    *resp_len = rx.len;
     return ESP_OK;
 }
 

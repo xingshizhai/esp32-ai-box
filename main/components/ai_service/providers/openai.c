@@ -8,6 +8,8 @@
 
 static const char *TAG = "openai_service";
 
+#define OPENAI_HTTP_ERROR_BODY_MAX 384
+
 static esp_err_t openai_service_init(ai_service_t *service, const ai_config_t *config);
 static esp_err_t openai_service_chat(ai_service_t *service, const char *user_message, ai_response_t *response);
 static esp_err_t openai_service_chat_with_history(ai_service_t *service, ai_message_t *messages, ai_response_t *response);
@@ -15,6 +17,18 @@ static esp_err_t openai_service_cleanup(ai_service_t *service);
 static char* build_chat_payload(const char *model, const char *user_message, float temperature, int max_tokens);
 static char* build_chat_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens);
 static esp_err_t parse_chat_response(const char *response_body, ai_response_t *response);
+
+static void openai_response_reset(ai_response_t *response)
+{
+    if (response == NULL) {
+        return;
+    }
+
+    response->content[0] = '\0';
+    response->is_success = false;
+    response->tokens_used = 0;
+    response->error_msg[0] = '\0';
+}
 
 ai_service_t* openai_service_create(void)
 {
@@ -44,13 +58,19 @@ static esp_err_t openai_service_init(ai_service_t *service, const ai_config_t *c
     data->api_key = strdup(config->api_key);
     data->base_url = strdup(config->base_url);
     data->model = strdup(config->model_name);
+    data->use_openrouter_headers = (config->provider == AI_PROVIDER_CONFIG_OPENROUTER);
+    data->openrouter_http_referer = strdup(config->openrouter_http_referer);
+    data->openrouter_x_title = strdup(config->openrouter_x_title);
     data->temperature = config->temperature;
     data->max_tokens = config->max_tokens;
 
-    if (data->api_key == NULL || data->base_url == NULL || data->model == NULL) {
+    if (data->api_key == NULL || data->base_url == NULL || data->model == NULL ||
+        data->openrouter_http_referer == NULL || data->openrouter_x_title == NULL) {
         free(data->api_key);
         free(data->base_url);
         free(data->model);
+        free(data->openrouter_http_referer);
+        free(data->openrouter_x_title);
         free(data);
         return ESP_ERR_NO_MEM;
     }
@@ -65,6 +85,8 @@ static esp_err_t openai_service_chat(ai_service_t *service, const char *user_mes
     if (service == NULL || service->private_data == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    openai_response_reset(response);
 
     openai_service_data_t *data = (openai_service_data_t *)service->private_data;
     char *payload = build_chat_payload(data->model, user_message, data->temperature, data->max_tokens);
@@ -85,11 +107,19 @@ static esp_err_t openai_service_chat(ai_service_t *service, const char *user_mes
         return ESP_FAIL;
     }
 
-    char auth_header[256];
+    char auth_header[API_KEY_SIZE + 16];
     snprintf(auth_header, sizeof(auth_header), "Bearer %s", data->api_key);
 
     esp_http_client_set_header(http_client, "Content-Type", "application/json");
     esp_http_client_set_header(http_client, "Authorization", auth_header);
+    if (data->use_openrouter_headers) {
+        if (data->openrouter_http_referer[0] != '\0') {
+            esp_http_client_set_header(http_client, "HTTP-Referer", data->openrouter_http_referer);
+        }
+        if (data->openrouter_x_title[0] != '\0') {
+            esp_http_client_set_header(http_client, "X-Title", data->openrouter_x_title);
+        }
+    }
     esp_http_client_set_post_field(http_client, payload, strlen(payload));
 
     esp_err_t err = esp_http_client_perform(http_client);
@@ -104,7 +134,18 @@ static esp_err_t openai_service_chat(ai_service_t *service, const char *user_mes
     int content_length = esp_http_client_get_content_length(http_client);
 
     if (status != 200) {
-        ESP_LOGE(TAG, "HTTP error: %d", status);
+        char error_body[OPENAI_HTTP_ERROR_BODY_MAX] = {0};
+        int err_len = esp_http_client_read(http_client, error_body, sizeof(error_body) - 1);
+        if (err_len < 0) {
+            err_len = 0;
+        }
+        error_body[err_len] = '\0';
+        ESP_LOGE(TAG, "HTTP error: %d body=%s", status, error_body);
+        snprintf(response->error_msg,
+                 sizeof(response->error_msg),
+                 "HTTP %d: %.220s",
+                 status,
+                 (error_body[0] != '\0') ? error_body : "empty response");
         free(payload);
         esp_http_client_cleanup(http_client);
         return ESP_FAIL;
@@ -135,6 +176,8 @@ static esp_err_t openai_service_chat_with_history(ai_service_t *service, ai_mess
         return ESP_ERR_INVALID_ARG;
     }
 
+    openai_response_reset(response);
+
     openai_service_data_t *data = (openai_service_data_t *)service->private_data;
     char *payload = build_chat_history_payload(data->model, messages, data->temperature, data->max_tokens);
     if (payload == NULL) {
@@ -154,11 +197,19 @@ static esp_err_t openai_service_chat_with_history(ai_service_t *service, ai_mess
         return ESP_FAIL;
     }
 
-    char auth_header[256];
+    char auth_header[API_KEY_SIZE + 16];
     snprintf(auth_header, sizeof(auth_header), "Bearer %s", data->api_key);
 
     esp_http_client_set_header(http_client, "Content-Type", "application/json");
     esp_http_client_set_header(http_client, "Authorization", auth_header);
+    if (data->use_openrouter_headers) {
+        if (data->openrouter_http_referer[0] != '\0') {
+            esp_http_client_set_header(http_client, "HTTP-Referer", data->openrouter_http_referer);
+        }
+        if (data->openrouter_x_title[0] != '\0') {
+            esp_http_client_set_header(http_client, "X-Title", data->openrouter_x_title);
+        }
+    }
     esp_http_client_set_post_field(http_client, payload, strlen(payload));
 
     esp_err_t err = esp_http_client_perform(http_client);
@@ -173,7 +224,18 @@ static esp_err_t openai_service_chat_with_history(ai_service_t *service, ai_mess
     int content_length = esp_http_client_get_content_length(http_client);
 
     if (status != 200) {
-        ESP_LOGE(TAG, "HTTP error: %d", status);
+        char error_body[OPENAI_HTTP_ERROR_BODY_MAX] = {0};
+        int err_len = esp_http_client_read(http_client, error_body, sizeof(error_body) - 1);
+        if (err_len < 0) {
+            err_len = 0;
+        }
+        error_body[err_len] = '\0';
+        ESP_LOGE(TAG, "HTTP error: %d body=%s", status, error_body);
+        snprintf(response->error_msg,
+                 sizeof(response->error_msg),
+                 "HTTP %d: %.220s",
+                 status,
+                 (error_body[0] != '\0') ? error_body : "empty response");
         free(payload);
         esp_http_client_cleanup(http_client);
         return ESP_FAIL;
@@ -214,6 +276,12 @@ static esp_err_t openai_service_cleanup(ai_service_t *service)
     }
     if (data->model != NULL) {
         free(data->model);
+    }
+    if (data->openrouter_http_referer != NULL) {
+        free(data->openrouter_http_referer);
+    }
+    if (data->openrouter_x_title != NULL) {
+        free(data->openrouter_x_title);
     }
 
     free(data);
@@ -273,12 +341,14 @@ static esp_err_t parse_chat_response(const char *response_body, ai_response_t *r
     cJSON *root = cJSON_Parse(response_body);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
+        snprintf(response->error_msg, sizeof(response->error_msg), "Invalid JSON response");
         return ESP_FAIL;
     }
 
     cJSON *choices = cJSON_GetObjectItem(root, "choices");
     if (choices == NULL || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
         ESP_LOGE(TAG, "Invalid response format");
+        snprintf(response->error_msg, sizeof(response->error_msg), "Invalid response format: choices");
         cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -287,6 +357,7 @@ static esp_err_t parse_chat_response(const char *response_body, ai_response_t *r
     cJSON *message = cJSON_GetObjectItem(first_choice, "message");
     if (message == NULL) {
         ESP_LOGE(TAG, "No message in response");
+        snprintf(response->error_msg, sizeof(response->error_msg), "Invalid response format: message");
         cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -294,6 +365,7 @@ static esp_err_t parse_chat_response(const char *response_body, ai_response_t *r
     cJSON *content = cJSON_GetObjectItem(message, "content");
     if (content == NULL || !cJSON_IsString(content)) {
         ESP_LOGE(TAG, "No content in message");
+        snprintf(response->error_msg, sizeof(response->error_msg), "Invalid response format: content");
         cJSON_Delete(root);
         return ESP_FAIL;
     }

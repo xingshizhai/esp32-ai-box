@@ -4,7 +4,36 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 
+#include <string.h>
+
 static const char *TAG = "ui";
+
+typedef enum {
+    PET_MOOD_IDLE = 0,
+    PET_MOOD_LISTEN,
+    PET_MOOD_THINK,
+    PET_MOOD_SPEAK,
+    PET_MOOD_HAPPY,
+    PET_MOOD_SAD,
+    PET_MOOD_ERROR,
+} pet_mood_t;
+
+typedef struct {
+    lv_obj_t *title_label;
+    lv_obj_t *provider_label;
+    lv_obj_t *status_label;
+    lv_obj_t *hint_label;
+    lv_obj_t *action_btn;
+    lv_obj_t *action_label;
+    lv_obj_t *debug_btn;
+    lv_obj_t *face;
+    lv_obj_t *eye_l;
+    lv_obj_t *eye_r;
+    lv_obj_t *pupil_l;
+    lv_obj_t *pupil_r;
+    lv_obj_t *mouth;
+    pet_mood_t mood;
+} ui_main_view_t;
 
 static lv_obj_t *s_main_panel = NULL;
 static lv_obj_t *s_chat_panel = NULL;
@@ -13,6 +42,12 @@ static lv_obj_t *s_loading_panel = NULL;
 static lv_obj_t *s_debug_panel = NULL;
 static bool s_ui_initialized = false;
 static ui_main_action_callback_t s_main_action_cb = NULL;
+static ui_main_view_t s_main_view = {0};
+
+static const lv_font_t *ui_main_font(void)
+{
+    return LV_FONT_DEFAULT;
+}
 
 static const char *ui_event_code_to_str(lv_event_code_t code)
 {
@@ -57,6 +92,121 @@ static bool ui_is_activate_event(lv_event_code_t code)
     return code == LV_EVENT_CLICKED;
 }
 
+static void ui_set_circle(lv_obj_t *obj, int size, uint32_t color)
+{
+    lv_obj_set_size(obj, size, size);
+    lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+static void ui_apply_pet_mood_locked(pet_mood_t mood)
+{
+    if (s_main_view.face == NULL) {
+        return;
+    }
+
+    s_main_view.mood = mood;
+
+    uint32_t face_color = 0xFBBF24;
+    int pupil_y = 0;
+    int mouth_w = 36;
+    int mouth_h = 10;
+    uint32_t mouth_color = 0x7C2D12;
+
+    switch (mood) {
+        case PET_MOOD_LISTEN:
+            face_color = 0x34D399;
+            pupil_y = 4;
+            mouth_w = 28;
+            mouth_h = 8;
+            break;
+        case PET_MOOD_THINK:
+            face_color = 0x60A5FA;
+            pupil_y = -3;
+            mouth_w = 18;
+            mouth_h = 6;
+            break;
+        case PET_MOOD_SPEAK:
+            face_color = 0xF472B6;
+            pupil_y = 0;
+            mouth_w = 30;
+            mouth_h = 18;
+            mouth_color = 0x9F1239;
+            break;
+        case PET_MOOD_HAPPY:
+            face_color = 0xFBBF24;
+            pupil_y = 2;
+            mouth_w = 42;
+            mouth_h = 14;
+            break;
+        case PET_MOOD_SAD:
+        case PET_MOOD_ERROR:
+            face_color = 0xFB7185;
+            pupil_y = 5;
+            mouth_w = 24;
+            mouth_h = 6;
+            mouth_color = 0x881337;
+            break;
+        case PET_MOOD_IDLE:
+        default:
+            break;
+    }
+
+    lv_obj_set_style_bg_color(s_main_view.face, lv_color_hex(face_color), 0);
+    lv_obj_align(s_main_view.pupil_l, LV_ALIGN_CENTER, -2, pupil_y);
+    lv_obj_align(s_main_view.pupil_r, LV_ALIGN_CENTER, 2, pupil_y);
+    lv_obj_set_size(s_main_view.mouth, mouth_w, mouth_h);
+    lv_obj_set_style_bg_color(s_main_view.mouth, lv_color_hex(mouth_color), 0);
+    lv_obj_set_style_radius(s_main_view.mouth, mouth_h / 2, 0);
+    lv_obj_align(s_main_view.mouth, LV_ALIGN_BOTTOM_MID, 0, -18);
+}
+
+static pet_mood_t ui_mood_from_status(const char *status)
+{
+    if (status == NULL || status[0] == '\0') {
+        return PET_MOOD_IDLE;
+    }
+
+    if (strstr(status, "Listen") || strstr(status, "聆听") || strstr(status, "Recording") ||
+        strstr(status, "录音") || strstr(status, "Wake")) {
+        return PET_MOOD_LISTEN;
+    }
+    if (strstr(status, "Think") || strstr(status, "思考") || strstr(status, "Process") ||
+        strstr(status, "Recogn") || strstr(status, "识别")) {
+        return PET_MOOD_THINK;
+    }
+    if (strstr(status, "Speak") || strstr(status, "说话") || strstr(status, "TTS") ||
+        strstr(status, "Playing") || strstr(status, "播放")) {
+        return PET_MOOD_SPEAK;
+    }
+    if (strstr(status, "Error") || strstr(status, "错误") || strstr(status, "Fail") ||
+        strstr(status, "断") || strstr(status, "offline")) {
+        return PET_MOOD_ERROR;
+    }
+    if (strstr(status, "Connected") || strstr(status, "已连接") || strstr(status, "Ready") ||
+        strstr(status, "待机")) {
+        return PET_MOOD_HAPPY;
+    }
+
+    return PET_MOOD_IDLE;
+}
+
+static void ui_action_button_event_cb(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED ||
+        code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        ESP_LOGI(TAG, "Action button event: %s", ui_event_code_to_str(code));
+    }
+
+    if (ui_is_activate_event(code) && s_main_action_cb != NULL) {
+        s_main_action_cb();
+    }
+}
+
 static esp_err_t ui_show_panel_locked(ui_panel_t panel)
 {
     ESP_LOGI(TAG, "Switch panel -> %s", ui_panel_to_str(panel));
@@ -94,7 +244,8 @@ static esp_err_t ui_show_panel_locked(ui_panel_t panel)
 static void ui_main_panel_event_cb(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED ||
+        code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         ESP_LOGI(TAG, "Main panel touch event: %s", ui_event_code_to_str(code));
     }
 
@@ -110,10 +261,6 @@ static void ui_main_panel_event_cb(lv_event_t *event)
 static void ui_debug_btn_event_cb(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        ESP_LOGI(TAG, "Debug button event: %s", ui_event_code_to_str(code));
-    }
-
     if (ui_is_activate_event(code)) {
         ESP_LOGI(TAG, "Debug button activated, entering debug panel");
         (void)ui_show_panel_locked(UI_PANEL_DEBUG);
@@ -123,14 +270,59 @@ static void ui_debug_btn_event_cb(lv_event_t *event)
 static void ui_back_btn_event_cb(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        ESP_LOGI(TAG, "Back button event: %s", ui_event_code_to_str(code));
-    }
-
     if (ui_is_activate_event(code)) {
         ESP_LOGI(TAG, "Back button activated, returning to main panel");
         (void)ui_show_panel_locked(UI_PANEL_MAIN);
     }
+}
+
+static esp_err_t ui_build_pet_face(lv_obj_t *parent)
+{
+    s_main_view.face = lv_obj_create(parent);
+    if (s_main_view.face == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    ui_set_circle(s_main_view.face, 126, 0xFBBF24);
+    lv_obj_set_style_shadow_width(s_main_view.face, 18, 0);
+    lv_obj_set_style_shadow_opa(s_main_view.face, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(s_main_view.face, lv_color_hex(0xF59E0B), 0);
+    lv_obj_align(s_main_view.face, LV_ALIGN_TOP_MID, 0, 42);
+    lv_obj_clear_flag(s_main_view.face, LV_OBJ_FLAG_CLICKABLE);
+
+    s_main_view.eye_l = lv_obj_create(s_main_view.face);
+    s_main_view.eye_r = lv_obj_create(s_main_view.face);
+    if (s_main_view.eye_l == NULL || s_main_view.eye_r == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    ui_set_circle(s_main_view.eye_l, 28, 0xFFFFFF);
+    ui_set_circle(s_main_view.eye_r, 28, 0xFFFFFF);
+    lv_obj_align(s_main_view.eye_l, LV_ALIGN_CENTER, -26, -12);
+    lv_obj_align(s_main_view.eye_r, LV_ALIGN_CENTER, 26, -12);
+
+    s_main_view.pupil_l = lv_obj_create(s_main_view.eye_l);
+    s_main_view.pupil_r = lv_obj_create(s_main_view.eye_r);
+    if (s_main_view.pupil_l == NULL || s_main_view.pupil_r == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    ui_set_circle(s_main_view.pupil_l, 12, 0x111827);
+    ui_set_circle(s_main_view.pupil_r, 12, 0x111827);
+    lv_obj_align(s_main_view.pupil_l, LV_ALIGN_CENTER, -2, 0);
+    lv_obj_align(s_main_view.pupil_r, LV_ALIGN_CENTER, 2, 0);
+
+    s_main_view.mouth = lv_obj_create(s_main_view.face);
+    if (s_main_view.mouth == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(s_main_view.mouth, 36, 10);
+    lv_obj_set_style_radius(s_main_view.mouth, 5, 0);
+    lv_obj_set_style_bg_color(s_main_view.mouth, lv_color_hex(0x7C2D12), 0);
+    lv_obj_set_style_bg_opa(s_main_view.mouth, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_main_view.mouth, 0, 0);
+    lv_obj_clear_flag(s_main_view.mouth, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_main_view.mouth, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    ui_apply_pet_mood_locked(PET_MOOD_IDLE);
+    return ESP_OK;
 }
 
 esp_err_t ui_init(void)
@@ -151,12 +343,12 @@ esp_err_t ui_init(void)
 
     static lv_style_t style;
     lv_style_init(&style);
-    lv_style_set_bg_color(&style, lv_color_black());
+    lv_style_set_bg_color(&style, lv_color_hex(0x0B1220));
     lv_style_set_text_color(&style, lv_color_white());
+    lv_style_set_text_font(&style, ui_main_font());
 
     s_main_panel = lv_obj_create(lv_scr_act());
     if (s_main_panel == NULL) {
-        ESP_LOGE(TAG, "Failed to create main panel - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -164,49 +356,114 @@ esp_err_t ui_init(void)
     lv_obj_set_size(s_main_panel, LV_HOR_RES, LV_VER_RES);
     lv_obj_center(s_main_panel);
     lv_obj_clear_flag(s_main_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(s_main_panel, 0, 0);
+    lv_obj_set_style_border_width(s_main_panel, 0, 0);
     lv_obj_add_event_cb(s_main_panel, ui_main_panel_event_cb, LV_EVENT_ALL, NULL);
 
-    lv_obj_t *title = lv_label_create(s_main_panel);
-    if (title == NULL) {
-        ESP_LOGE(TAG, "Failed to create title label - out of memory");
+    /* Soft radial-ish backdrop using stacked panels */
+    lv_obj_t *glow = lv_obj_create(s_main_panel);
+    if (glow == NULL) {
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_label_set_text(title, "AI Chat Assistant");
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+    ui_set_circle(glow, 180, 0x1E3A5F);
+    lv_obj_set_style_bg_opa(glow, LV_OPA_40, 0);
+    lv_obj_align(glow, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_clear_flag(glow, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *info = lv_label_create(s_main_panel);
-    if (info == NULL) {
-        ESP_LOGE(TAG, "Failed to create info label - out of memory");
+    s_main_view.title_label = lv_label_create(s_main_panel);
+    if (s_main_view.title_label == NULL) {
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_label_set_text(info, "Touch to start");
-    lv_obj_align(info, LV_ALIGN_CENTER, 0, 0);
+    lv_label_set_text(s_main_view.title_label, "AI Pet");
+    lv_obj_set_style_text_font(s_main_view.title_label, ui_main_font(), 0);
+    lv_obj_set_style_text_color(s_main_view.title_label, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_align(s_main_view.title_label, LV_ALIGN_TOP_LEFT, 12, 8);
 
-    lv_obj_t *debug_btn = lv_btn_create(s_main_panel);
-    if (debug_btn == NULL) {
-        ESP_LOGE(TAG, "Failed to create debug button - out of memory");
+    s_main_view.provider_label = lv_label_create(s_main_panel);
+    if (s_main_view.provider_label == NULL) {
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_obj_set_size(debug_btn, 120, 40);
-    lv_obj_align(debug_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
-    lv_obj_add_event_cb(debug_btn, ui_debug_btn_event_cb, LV_EVENT_ALL, NULL);
+    lv_label_set_text(s_main_view.provider_label, "Provider: -");
+    lv_obj_set_style_text_font(s_main_view.provider_label, ui_main_font(), 0);
+    lv_obj_set_style_text_color(s_main_view.provider_label, lv_color_hex(0x94A3B8), 0);
+    lv_obj_align(s_main_view.provider_label, LV_ALIGN_TOP_RIGHT, -52, 8);
 
-    lv_obj_t *debug_label = lv_label_create(debug_btn);
+    ret = ui_build_pet_face(s_main_panel);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    s_main_view.status_label = lv_label_create(s_main_panel);
+    if (s_main_view.status_label == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_label_set_text(s_main_view.status_label, "待机中");
+    lv_obj_set_style_text_font(s_main_view.status_label, ui_main_font(), 0);
+    lv_obj_set_style_text_color(s_main_view.status_label, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_align(s_main_view.status_label, LV_ALIGN_TOP_MID, 0, 176);
+
+    s_main_view.hint_label = lv_label_create(s_main_panel);
+    if (s_main_view.hint_label == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_label_set_text(s_main_view.hint_label, "点击开始对话");
+    lv_obj_set_style_text_font(s_main_view.hint_label, ui_main_font(), 0);
+    lv_obj_set_style_text_color(s_main_view.hint_label, lv_color_hex(0x94A3B8), 0);
+    lv_obj_align(s_main_view.hint_label, LV_ALIGN_TOP_MID, 0, 196);
+
+    s_main_view.action_btn = lv_btn_create(s_main_panel);
+    if (s_main_view.action_btn == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_obj_set_size(s_main_view.action_btn, 168, 34);
+    lv_obj_align(s_main_view.action_btn, LV_ALIGN_BOTTOM_MID, -20, -10);
+    lv_obj_add_event_cb(s_main_view.action_btn, ui_action_button_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_set_style_bg_color(s_main_view.action_btn, lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_bg_grad_color(s_main_view.action_btn, lv_color_hex(0x7C3AED), 0);
+    lv_obj_set_style_bg_grad_dir(s_main_view.action_btn, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_radius(s_main_view.action_btn, 16, 0);
+    lv_obj_set_style_shadow_width(s_main_view.action_btn, 0, 0);
+
+    s_main_view.action_label = lv_label_create(s_main_view.action_btn);
+    if (s_main_view.action_label == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_label_set_text(s_main_view.action_label, "开始对话");
+    lv_obj_set_style_text_font(s_main_view.action_label, ui_main_font(), 0);
+    lv_obj_center(s_main_view.action_label);
+
+    s_main_view.debug_btn = lv_btn_create(s_main_panel);
+    if (s_main_view.debug_btn == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_obj_set_size(s_main_view.debug_btn, 48, 28);
+    lv_obj_align(s_main_view.debug_btn, LV_ALIGN_BOTTOM_RIGHT, -10, -12);
+    lv_obj_add_event_cb(s_main_view.debug_btn, ui_debug_btn_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_set_style_bg_color(s_main_view.debug_btn, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_border_width(s_main_view.debug_btn, 1, 0);
+    lv_obj_set_style_border_color(s_main_view.debug_btn, lv_color_hex(0x475569), 0);
+    lv_obj_set_style_radius(s_main_view.debug_btn, 12, 0);
+    lv_obj_set_style_shadow_width(s_main_view.debug_btn, 0, 0);
+
+    lv_obj_t *debug_label = lv_label_create(s_main_view.debug_btn);
     if (debug_label == NULL) {
-        ESP_LOGE(TAG, "Failed to create debug label - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_label_set_text(debug_label, "Debug");
+    lv_label_set_text(debug_label, "调试");
+    lv_obj_set_style_text_font(debug_label, ui_main_font(), 0);
     lv_obj_center(debug_label);
 
     s_chat_panel = lv_obj_create(lv_scr_act());
     if (s_chat_panel == NULL) {
-        ESP_LOGE(TAG, "Failed to create chat panel - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -218,7 +475,6 @@ esp_err_t ui_init(void)
 
     s_settings_panel = lv_obj_create(lv_scr_act());
     if (s_settings_panel == NULL) {
-        ESP_LOGE(TAG, "Failed to create settings panel - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -230,7 +486,6 @@ esp_err_t ui_init(void)
 
     s_loading_panel = lv_obj_create(lv_scr_act());
     if (s_loading_panel == NULL) {
-        ESP_LOGE(TAG, "Failed to create loading panel - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -242,16 +497,15 @@ esp_err_t ui_init(void)
 
     lv_obj_t *loading_label = lv_label_create(s_loading_panel);
     if (loading_label == NULL) {
-        ESP_LOGE(TAG, "Failed to create loading label - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_label_set_text(loading_label, "Processing...");
+    lv_label_set_text(loading_label, "请稍候...");
+    lv_obj_set_style_text_font(loading_label, ui_main_font(), 0);
     lv_obj_align(loading_label, LV_ALIGN_CENTER, 0, 0);
 
     s_debug_panel = lv_obj_create(lv_scr_act());
     if (s_debug_panel == NULL) {
-        ESP_LOGE(TAG, "Failed to create debug panel - out of memory");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -289,7 +543,6 @@ esp_err_t ui_show_panel(ui_panel_t panel)
     }
 
     esp_err_t ret = ui_show_panel_locked(panel);
-
     lvgl_port_unlock();
     return ret;
 }
@@ -306,19 +559,35 @@ esp_err_t ui_update_chat_message(const char *user_msg, const char *ai_msg)
 
     lv_obj_clean(s_chat_panel);
 
+    lv_obj_t *back_btn = lv_btn_create(s_chat_panel);
+    lv_obj_set_size(back_btn, 64, 28);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_add_event_cb(back_btn, ui_back_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, "返回");
+    lv_obj_set_style_text_font(back_label, ui_main_font(), 0);
+    lv_obj_center(back_label);
+
     if (user_msg != NULL) {
         lv_obj_t *user_label = lv_label_create(s_chat_panel);
-        lv_label_set_text_fmt(user_label, "You: %s", user_msg);
-        lv_obj_set_style_text_align(user_label, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 10, 10);
+        lv_label_set_text_fmt(user_label, "用户: %s", user_msg);
+        lv_obj_set_style_text_font(user_label, ui_main_font(), 0);
+        lv_obj_set_width(user_label, LV_HOR_RES - 24);
+        lv_label_set_long_mode(user_label, LV_LABEL_LONG_WRAP);
+        lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 12, 48);
     }
 
     if (ai_msg != NULL) {
         lv_obj_t *ai_label = lv_label_create(s_chat_panel);
-        lv_label_set_text_fmt(ai_label, "AI: %s", ai_msg);
-        lv_obj_set_style_text_align(ai_label, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_align(ai_label, LV_ALIGN_TOP_LEFT, 10, 60);
+        lv_label_set_text_fmt(ai_label, "助手: %s", ai_msg);
+        lv_obj_set_style_text_font(ai_label, ui_main_font(), 0);
+        lv_obj_set_width(ai_label, LV_HOR_RES - 24);
+        lv_label_set_long_mode(ai_label, LV_LABEL_LONG_WRAP);
+        lv_obj_align(ai_label, LV_ALIGN_TOP_LEFT, 12, 110);
     }
+
+    ui_apply_pet_mood_locked(PET_MOOD_SPEAK);
+    (void)ui_show_panel_locked(UI_PANEL_CHAT);
 
     lvgl_port_unlock();
     return ESP_OK;
@@ -326,7 +595,7 @@ esp_err_t ui_update_chat_message(const char *user_msg, const char *ai_msg)
 
 esp_err_t ui_update_status(const char *status)
 {
-    if (!s_ui_initialized || s_main_panel == NULL) {
+    if (!s_ui_initialized || s_main_panel == NULL || s_main_view.status_label == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -334,10 +603,8 @@ esp_err_t ui_update_status(const char *status)
         return ESP_FAIL;
     }
 
-    lv_obj_t *status_label = lv_obj_get_child(s_main_panel, 1);
-    if (status_label != NULL) {
-        lv_label_set_text(status_label, status);
-    }
+    lv_label_set_text(s_main_view.status_label, (status != NULL) ? status : "");
+    ui_apply_pet_mood_locked(ui_mood_from_status(status));
 
     lvgl_port_unlock();
     return ESP_OK;
@@ -345,7 +612,7 @@ esp_err_t ui_update_status(const char *status)
 
 esp_err_t ui_update_provider(const char *provider_name)
 {
-    if (!s_ui_initialized || s_main_panel == NULL) {
+    if (!s_ui_initialized || s_main_panel == NULL || s_main_view.provider_label == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -353,10 +620,9 @@ esp_err_t ui_update_provider(const char *provider_name)
         return ESP_FAIL;
     }
 
-    lv_obj_t *title = lv_obj_get_child(s_main_panel, 0);
-    if (title != NULL) {
-        lv_label_set_text_fmt(title, "AI Chat - %s", provider_name);
-    }
+    lv_label_set_text_fmt(s_main_view.provider_label,
+                          "%s",
+                          (provider_name != NULL && provider_name[0] != '\0') ? provider_name : "-");
 
     lvgl_port_unlock();
     return ESP_OK;

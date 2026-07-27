@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,6 +39,13 @@ typedef struct {
     volatile bool debug_play_record_req;
     volatile bool debug_play_req;
     volatile bool voice_round_req;
+    TaskHandle_t chat_worker_task;
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+    TaskHandle_t local_wakeup_task;
+    TickType_t local_wakeup_last_trigger_tick;
+#endif
+    bool wakeup_armed;
+    TickType_t wakeup_armed_tick;
 #if CONFIG_SDCARD_ENABLED
     volatile bool debug_sdcard_req;
     volatile bool debug_test_req;
@@ -51,6 +59,40 @@ static app_runtime_state_t s_runtime = {0};
 #define VOICE_SESSION_ID_MAX         (64)
 #define PCM_S16LE_BYTES_PER_SAMPLE   (2)
 #define STT_DEBUG_PCM_SNAPSHOT_MAX_BYTES (128 * 1024)
+/* HTTPS/mbedtls needs far more stack than the default main task. */
+#define APP_CHAT_WORKER_STACK_SIZE   (24 * 1024)
+
+#ifndef CONFIG_ENABLE_VOICE_WAKEUP
+#define CONFIG_ENABLE_VOICE_WAKEUP 0
+#endif
+
+#ifndef CONFIG_VOICE_WAKEUP_WORDS
+#define CONFIG_VOICE_WAKEUP_WORDS "hey box,ok box,xiao zhi"
+#endif
+
+#ifndef CONFIG_VOICE_WAKEUP_WINDOW_MS
+#define CONFIG_VOICE_WAKEUP_WINDOW_MS 8000
+#endif
+
+#ifndef CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+#define CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP 0
+#endif
+
+#ifndef CONFIG_LOCAL_WAKEUP_CHUNK_MS
+#define CONFIG_LOCAL_WAKEUP_CHUNK_MS 80
+#endif
+
+#ifndef CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD
+#define CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD 1800
+#endif
+
+#ifndef CONFIG_LOCAL_WAKEUP_SUSTAIN_MS
+#define CONFIG_LOCAL_WAKEUP_SUSTAIN_MS 240
+#endif
+
+#ifndef CONFIG_LOCAL_WAKEUP_COOLDOWN_MS
+#define CONFIG_LOCAL_WAKEUP_COOLDOWN_MS 3500
+#endif
 
 #if CONFIG_SDCARD_ENABLED
 #define SD_MP3_PATH_MAX_LEN          (256)
@@ -113,6 +155,450 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
 static esp_err_t app_runtime_run_voice_chat_round(void);
 static esp_err_t app_runtime_initialize_ai_service(void);
 static esp_err_t app_runtime_initialize_voice_gateway_client(void);
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+static void app_local_wakeup_task(void *arg);
+#endif
+
+static const char *app_skip_text_spaces(const char *s)
+{
+    if (s == NULL) {
+        return NULL;
+    }
+
+    while (*s != '\0' && isspace((unsigned char)*s)) {
+        ++s;
+    }
+    return s;
+}
+
+#if CONFIG_ENABLE_VOICE_WAKEUP
+static const char *app_consume_utf8_token(const char *s, const char *token)
+{
+    if (s == NULL || token == NULL) {
+        return NULL;
+    }
+
+    size_t token_len = strlen(token);
+    if (token_len == 0) {
+        return s;
+    }
+
+    if (strncmp(s, token, token_len) == 0) {
+        return s + token_len;
+    }
+    return NULL;
+}
+
+static const char *app_skip_wakeup_delimiters(const char *s)
+{
+    if (s == NULL) {
+        return NULL;
+    }
+
+    while (*s != '\0') {
+        if (isspace((unsigned char)*s) ||
+            *s == ',' || *s == ':' || *s == '!' || *s == '?' ||
+            *s == '.' || *s == ';') {
+            ++s;
+            continue;
+        }
+
+        const char *next = NULL;
+
+        next = app_consume_utf8_token(s, "\xE3\x80\x80"); /* U+3000 ideographic space */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xEF\xBC\x8C"); /* U+FF0C ， */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xE3\x80\x82"); /* U+3002 。 */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xEF\xBC\x81"); /* U+FF01 ！ */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xEF\xBC\x9F"); /* U+FF1F ？ */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xEF\xBC\x9A"); /* U+FF1A ： */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xE3\x80\x81"); /* U+3001 、 */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        next = app_consume_utf8_token(s, "\xEF\xBC\x9B"); /* U+FF1B ； */
+        if (next != NULL) {
+            s = next;
+            continue;
+        }
+
+        break;
+    }
+
+    return s;
+}
+
+static size_t app_ascii_prefix_match_len_ci(const char *input, const char *phrase)
+{
+    if (input == NULL || phrase == NULL) {
+        return 0;
+    }
+
+    const unsigned char *in = (const unsigned char *)input;
+    const unsigned char *ph = (const unsigned char *)phrase;
+    size_t matched_len = 0;
+
+    while (*ph != '\0') {
+        if (*in == '\0') {
+            return 0;
+        }
+
+        if ((*in & 0x80U) != 0 || (*ph & 0x80U) != 0) {
+            return 0;
+        }
+
+        if (tolower(*in) != tolower(*ph)) {
+            return 0;
+        }
+
+        ++in;
+        ++ph;
+        ++matched_len;
+    }
+
+    return matched_len;
+}
+
+static size_t app_wakeup_prefix_match_len(const char *input, const char *phrase)
+{
+    if (input == NULL || phrase == NULL) {
+        return 0;
+    }
+
+    size_t phrase_len = strlen(phrase);
+    if (phrase_len == 0) {
+        return 0;
+    }
+
+    if (strncmp(input, phrase, phrase_len) == 0) {
+        return phrase_len;
+    }
+
+    return app_ascii_prefix_match_len_ci(input, phrase);
+}
+
+static void app_trim_ascii_trailing_spaces(char *s)
+{
+    if (s == NULL) {
+        return;
+    }
+
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        s[len - 1] = '\0';
+        --len;
+    }
+}
+
+static bool app_wakeup_match(const char *text,
+                             const char **query_after_wakeup)
+{
+    if (text == NULL || query_after_wakeup == NULL) {
+        return false;
+    }
+
+    const char *input = app_skip_wakeup_delimiters(text);
+    if (input == NULL || *input == '\0') {
+        return false;
+    }
+
+    char list_buf[256] = {0};
+    strncpy(list_buf, CONFIG_VOICE_WAKEUP_WORDS, sizeof(list_buf) - 1);
+    list_buf[sizeof(list_buf) - 1] = '\0';
+
+    char *saveptr = NULL;
+    char *token = strtok_r(list_buf, ",", &saveptr);
+    while (token != NULL) {
+        app_trim_ascii_trailing_spaces(token);
+        const char *phrase = app_skip_text_spaces(token);
+
+        if (phrase != NULL && phrase[0] != '\0') {
+            size_t matched_len = app_wakeup_prefix_match_len(input, phrase);
+            if (matched_len > 0) {
+                const char *rest = app_skip_wakeup_delimiters(input + matched_len);
+                *query_after_wakeup = (rest != NULL) ? rest : "";
+                return true;
+            }
+        }
+
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+
+    return false;
+}
+
+static bool app_wakeup_window_expired(void)
+{
+    if (!s_runtime.wakeup_armed) {
+        return true;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    uint32_t elapsed_ms = (uint32_t)pdTICKS_TO_MS(now - s_runtime.wakeup_armed_tick);
+    return elapsed_ms > (uint32_t)CONFIG_VOICE_WAKEUP_WINDOW_MS;
+}
+#endif
+
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+static bool app_local_wakeup_should_pause(void)
+{
+    return s_runtime.is_processing ||
+           s_runtime.debug_playback_busy ||
+           s_runtime.is_recording ||
+           s_runtime.voice_round_req;
+}
+
+static int app_local_wakeup_peak_abs(const uint8_t *pcm, int pcm_len)
+{
+    if (pcm == NULL || pcm_len < 2) {
+        return 0;
+    }
+
+    const int16_t *samples = (const int16_t *)pcm;
+    int sample_count = pcm_len / (int)sizeof(int16_t);
+    int peak = 0;
+    for (int i = 0; i < sample_count; ++i) {
+        int v = samples[i];
+        if (v == INT16_MIN) {
+            v = INT16_MAX;
+        } else if (v < 0) {
+            v = -v;
+        }
+        if (v > peak) {
+            peak = v;
+        }
+    }
+    return peak;
+}
+
+static void app_local_wakeup_task(void *arg)
+{
+    (void)arg;
+
+    const int sample_rate_hz = 16000;
+    const int chunk_ms = CONFIG_LOCAL_WAKEUP_CHUNK_MS;
+    const int chunk_bytes = (sample_rate_hz * chunk_ms * PCM_S16LE_BYTES_PER_SAMPLE) / 1000;
+    const int threshold = CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD;
+    const int sustain_ms = CONFIG_LOCAL_WAKEUP_SUSTAIN_MS;
+    const TickType_t cooldown_ticks = pdMS_TO_TICKS(CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
+
+    uint8_t *chunk = (uint8_t *)malloc(chunk_bytes);
+    if (chunk == NULL) {
+        ESP_LOGE(TAG, "Local wakeup: alloc failed (%d bytes)", chunk_bytes);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    bool capture_started = false;
+    int active_ms = 0;
+
+    ESP_LOGI(TAG,
+             "Local wakeup enabled: chunk=%dms threshold=%d sustain=%dms cooldown=%dms",
+             chunk_ms,
+             threshold,
+             sustain_ms,
+             CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
+
+    while (true) {
+        if (app_local_wakeup_should_pause()) {
+            if (capture_started) {
+                (void)audio_stream_stop_capture();
+                capture_started = false;
+            }
+            active_ms = 0;
+            vTaskDelay(pdMS_TO_TICKS(60));
+            continue;
+        }
+
+        if (!capture_started) {
+            esp_err_t err = audio_stream_start_capture();
+            if (err != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+                continue;
+            }
+            capture_started = true;
+            active_ms = 0;
+        }
+
+        int pcm_len = 0;
+        esp_err_t err = audio_stream_read_capture_chunk(chunk, chunk_bytes, &pcm_len);
+        if (err != ESP_OK || pcm_len <= 0) {
+            active_ms = 0;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        int peak = app_local_wakeup_peak_abs(chunk, pcm_len);
+        if (peak >= threshold) {
+            active_ms += chunk_ms;
+        } else {
+            if (active_ms > chunk_ms) {
+                active_ms -= chunk_ms;
+            } else {
+                active_ms = 0;
+            }
+        }
+
+        if (active_ms < sustain_ms) {
+            continue;
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - s_runtime.local_wakeup_last_trigger_tick) < cooldown_ticks) {
+            active_ms = 0;
+            continue;
+        }
+
+        s_runtime.local_wakeup_last_trigger_tick = now;
+        active_ms = 0;
+
+        (void)audio_stream_stop_capture();
+        capture_started = false;
+
+        if (!network_is_connected() ||
+            s_runtime.ai_service == NULL ||
+            s_runtime.voice_gateway_client == NULL) {
+            ESP_LOGW(TAG, "Local wakeup ignored: runtime not ready");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
+        if (!s_runtime.voice_round_req && !s_runtime.is_processing) {
+            s_runtime.voice_round_req = true;
+            ESP_LOGI(TAG, "Local offline wakeup triggered");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+#endif
+
+static esp_err_t app_runtime_process_chat_text(const char *text)
+{
+    if (text == NULL || text[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "User said: %s", text);
+
+    char assistant_text[AI_MAX_RESPONSE_SIZE] = {0};
+    esp_err_t err = app_runtime_run_chat_turn(text, assistant_text, sizeof(assistant_text));
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    app_config_t *app_config = config_get();
+    (void)audio_set_volume(app_config->volume);
+    return ESP_OK;
+}
+
+static const char *app_chat_provider_name(ai_provider_config_t provider)
+{
+    switch (provider) {
+        case AI_PROVIDER_CONFIG_OPENAI:
+            return "OpenAI";
+        case AI_PROVIDER_CONFIG_ZHIPU:
+            return "Zhipu AI";
+        case AI_PROVIDER_CONFIG_DEEPSEEK:
+            return "DeepSeek";
+        case AI_PROVIDER_CONFIG_KIMI:
+            return "Kimi";
+        case AI_PROVIDER_CONFIG_MINIMAX:
+            return "MiniMax";
+        case AI_PROVIDER_CONFIG_OPENROUTER:
+            return "OpenRouter";
+        default:
+            return "Unknown";
+    }
+}
+
+static void app_mask_api_key(const char *api_key, char *masked, size_t masked_size)
+{
+    if (masked == NULL || masked_size == 0) {
+        return;
+    }
+
+    masked[0] = '\0';
+
+    if (api_key == NULL || api_key[0] == '\0') {
+        (void)snprintf(masked, masked_size, "<empty>");
+        return;
+    }
+
+    size_t key_len = strlen(api_key);
+    if (key_len <= 8) {
+        (void)snprintf(masked, masked_size, "<set:%u chars>", (unsigned)key_len);
+        return;
+    }
+
+    int prefix_len = 4;
+    int suffix_len = 4;
+    const char *suffix = api_key + (key_len - (size_t)suffix_len);
+
+    (void)snprintf(masked,
+                   masked_size,
+                   "%.*s...%.*s (%u)",
+                   prefix_len,
+                   api_key,
+                   suffix_len,
+                   suffix,
+                   (unsigned)key_len);
+}
+
+static void app_runtime_log_chat_config(const app_config_t *config)
+{
+    if (config == NULL) {
+        return;
+    }
+
+    char masked_key[48] = {0};
+    app_mask_api_key(config->api_key, masked_key, sizeof(masked_key));
+
+    ESP_LOGI(TAG,
+             "Chat cfg: provider=%s model=%s base_url=%s api_key=%s",
+             app_chat_provider_name(config->provider),
+             (config->model_name[0] != '\0') ? config->model_name : "<empty>",
+             (config->base_url[0] != '\0') ? config->base_url : "<empty>",
+             masked_key);
+
+    if (config->provider == AI_PROVIDER_CONFIG_OPENROUTER) {
+        ESP_LOGI(TAG,
+                 "OpenRouter headers: referer=%s x_title=%s",
+                 (config->openrouter_http_referer[0] != '\0') ? config->openrouter_http_referer : "<empty>",
+                 (config->openrouter_x_title[0] != '\0') ? config->openrouter_x_title : "<empty>");
+    }
+}
 
 static uint32_t app_runtime_elapsed_ms(TickType_t start_tick, TickType_t end_tick)
 {
@@ -571,13 +1057,20 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     int chunk_ms = cfg->audio_chunk_ms;
 
     char session_id[VOICE_SESSION_ID_MAX] = {0};
-    char stt_text[VOICE_STT_TEXT_MAX] = {0};
-    char assistant_text[AI_MAX_RESPONSE_SIZE] = {0};
+    char *stt_text = (char *)calloc(1, VOICE_STT_TEXT_MAX);
+    char *assistant_text = (char *)calloc(1, AI_MAX_RESPONSE_SIZE);
     uint8_t *tts_audio = NULL;
     int tts_len = 0;
     bool stt_started = false;
     const char *fail_stage = "capture";
     stt_debug_trace_t stt_trace;
+
+    if (stt_text == NULL || assistant_text == NULL) {
+        free(stt_text);
+        free(assistant_text);
+        ESP_LOGE(TAG, "Voice round buffer allocation failed");
+        return ESP_ERR_NO_MEM;
+    }
 
     app_make_voice_turn_id(session_id, sizeof(session_id));
     app_stt_debug_trace_init(&stt_trace,
@@ -615,7 +1108,7 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
 
     fail_stage = "stt_stop";
     stt_trace.stt_stop_start_tick = xTaskGetTickCount();
-    err = voice_gateway_stt_stop(s_runtime.voice_gateway_client, session_id, stt_text, sizeof(stt_text));
+    err = voice_gateway_stt_stop(s_runtime.voice_gateway_client, session_id, stt_text, VOICE_STT_TEXT_MAX);
     stt_trace.stt_stop_end_tick = xTaskGetTickCount();
     stt_started = false;
     if (err != ESP_OK) {
@@ -636,7 +1129,7 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
 
     fail_stage = "chat";
-    err = app_runtime_run_chat_turn(stt_text, assistant_text, sizeof(assistant_text));
+    err = app_runtime_run_chat_turn(stt_text, assistant_text, AI_MAX_RESPONSE_SIZE);
     if (err != ESP_OK || assistant_text[0] == '\0') {
         if (err == ESP_OK) {
             err = ESP_FAIL;
@@ -684,6 +1177,8 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     app_stt_debug_trace_log(&stt_trace, "ok", ESP_OK, true, stt_text);
     app_stt_debug_trace_deinit(&stt_trace);
     free(tts_audio);
+    free(stt_text);
+    free(assistant_text);
     return ESP_OK;
 
 fail:
@@ -701,6 +1196,8 @@ fail:
     if (tts_audio != NULL) {
         free(tts_audio);
     }
+    free(stt_text);
+    free(assistant_text);
     (void)audio_stream_stop_capture();
     if (stt_started) {
         char ignored_text[8] = {0};
@@ -719,6 +1216,46 @@ static void app_handle_voice_round_request(void)
 {
     s_runtime.is_debug_mode = false;
 
+    if (!network_is_connected()) {
+        ESP_LOGW(TAG, "Voice round skipped: network is disconnected");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Network disconnected");
+        }
+        return;
+    }
+    if (s_runtime.ai_service == NULL) {
+        ESP_LOGW(TAG, "Voice round skipped: AI service is not initialized (check chat provider API key/base URL/model)");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("AI not ready");
+        }
+        return;
+    }
+
+    /* No STT/TTS gateway yet: still exercise DeepSeek via a short text turn. */
+    if (s_runtime.voice_gateway_client == NULL) {
+        ESP_LOGW(TAG, "Voice gateway unavailable, falling back to text chat");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Thinking...");
+        }
+
+        esp_err_t err = app_runtime_process_chat_text(
+            "Say hi to your electronic pet owner in one short Chinese sentence.");
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Text chat fallback failed: %s", esp_err_to_name(err));
+            if (s_runtime.ui_ready) {
+                char status[96] = {0};
+                snprintf(status, sizeof(status), "Chat failed: %s", esp_err_to_name(err));
+                (void)ui_update_status(status);
+            }
+            return;
+        }
+
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Ready");
+        }
+        return;
+    }
+
     esp_err_t err = app_runtime_run_voice_chat_round();
     if (err == ESP_OK) {
         return;
@@ -731,6 +1268,16 @@ static void app_handle_voice_round_request(void)
         (void)ui_update_status(status);
         (void)ui_debug_set_playing_state(false);
         (void)ui_debug_update_status(status);
+    }
+}
+
+static void app_chat_worker_task(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        app_handle_voice_round_request();
     }
 }
 
@@ -940,6 +1487,18 @@ static const char *app_voice_provider_name(voice_provider_config_t provider)
 static esp_err_t app_runtime_initialize_ai_service(void)
 {
     app_config_t *config = config_get();
+    const char *provider_name = app_chat_provider_name(config->provider);
+
+    app_runtime_log_chat_config(config);
+
+    if (config->api_key[0] == '\0' || config->base_url[0] == '\0' || config->model_name[0] == '\0') {
+        ESP_LOGE(TAG,
+                 "Active chat provider config incomplete (api_key/base_url/model_name required)");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Chat provider config incomplete");
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
 
     if (s_runtime.ai_service != NULL) {
         ai_service_destroy(s_runtime.ai_service);
@@ -958,21 +1517,6 @@ static esp_err_t app_runtime_initialize_ai_service(void)
         ai_service_destroy(s_runtime.ai_service);
         s_runtime.ai_service = NULL;
         return err;
-    }
-
-    const char *provider_name = "Unknown";
-    switch (config->provider) {
-        case AI_PROVIDER_CONFIG_OPENAI:
-            provider_name = "OpenAI";
-            break;
-        case AI_PROVIDER_CONFIG_ZHIPU:
-            provider_name = "Zhipu AI";
-            break;
-        case AI_PROVIDER_CONFIG_DEEPSEEK:
-            provider_name = "DeepSeek";
-            break;
-        default:
-            break;
     }
 
     if (s_runtime.ui_ready) {
@@ -1068,6 +1612,29 @@ esp_err_t app_runtime_init(bool ui_ready)
         ESP_LOGW(TAG, "Voice gateway init skipped: %s", esp_err_to_name(err));
     }
 
+    if (xTaskCreate(app_chat_worker_task,
+                    "chat_worker",
+                    APP_CHAT_WORKER_STACK_SIZE,
+                    NULL,
+                    5,
+                    &s_runtime.chat_worker_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create chat worker task");
+        return ESP_ERR_NO_MEM;
+    }
+
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+    s_runtime.local_wakeup_last_trigger_tick = xTaskGetTickCount();
+    if (xTaskCreate(app_local_wakeup_task,
+                    "local_wakeup",
+                    4096,
+                    NULL,
+                    4,
+                    &s_runtime.local_wakeup_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create local wakeup task");
+        return ESP_ERR_NO_MEM;
+    }
+#endif
+
     return ESP_OK;
 }
 
@@ -1075,7 +1642,11 @@ void app_runtime_process_requests(void)
 {
     if (s_runtime.voice_round_req) {
         s_runtime.voice_round_req = false;
-        app_handle_voice_round_request();
+        if (s_runtime.chat_worker_task != NULL) {
+            (void)xTaskNotifyGive(s_runtime.chat_worker_task);
+        } else {
+            app_handle_voice_round_request();
+        }
     }
 
     if (s_runtime.debug_record_req) {
@@ -1100,6 +1671,100 @@ void app_runtime_process_requests(void)
         app_handle_debug_test_request();
     }
 #endif
+}
+
+esp_err_t app_runtime_switch_chat_provider(ai_provider_config_t provider)
+{
+    app_config_t *cfg = config_get();
+    if (cfg == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (provider >= AI_PROVIDER_CONFIG_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ai_provider_config_t old_provider = cfg->provider;
+    if (provider == old_provider) {
+        ESP_LOGI(TAG, "Chat provider unchanged: %s", app_chat_provider_name(provider));
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG,
+             "Switching chat provider: %s -> %s",
+             app_chat_provider_name(old_provider),
+             app_chat_provider_name(provider));
+
+    esp_err_t err = config_set_ai_provider(provider);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to persist provider switch: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = app_runtime_initialize_ai_service();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Chat provider switched to %s", app_chat_provider_name(provider));
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG,
+             "Provider %s init failed (%s), rolling back",
+             app_chat_provider_name(provider),
+             esp_err_to_name(err));
+
+    esp_err_t rollback_cfg_err = config_set_ai_provider(old_provider);
+    if (rollback_cfg_err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Rollback persist failed: %s",
+                 esp_err_to_name(rollback_cfg_err));
+        return err;
+    }
+
+    esp_err_t rollback_init_err = app_runtime_initialize_ai_service();
+    if (rollback_init_err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Rollback provider init failed: %s",
+                 esp_err_to_name(rollback_init_err));
+    }
+
+    return err;
+}
+
+esp_err_t app_runtime_reload_ai_service(void)
+{
+    ESP_LOGI(TAG, "Reloading AI service for active provider");
+    return app_runtime_initialize_ai_service();
+}
+
+esp_err_t app_runtime_test_chat(const char *prompt)
+{
+    if (s_runtime.ai_service == NULL) {
+        ESP_LOGE(TAG, "AI service not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const char *effective_prompt = prompt;
+    if (effective_prompt == NULL || effective_prompt[0] == '\0') {
+        effective_prompt = "Reply with OK";
+    }
+
+    ai_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    ESP_LOGI(TAG, "Provider test prompt: %s", effective_prompt);
+    esp_err_t err = ai_service_chat(s_runtime.ai_service, effective_prompt, &response);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Provider test failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    if (!response.is_success || response.content[0] == '\0') {
+        ESP_LOGE(TAG,
+                 "Provider test returned no content: %s",
+                 (response.error_msg[0] != '\0') ? response.error_msg : "unknown");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Provider test response: %s", response.content);
+    return ESP_OK;
 }
 
 void app_runtime_request_voice_round(void)
@@ -1169,16 +1834,54 @@ void app_runtime_handle_stt_result(const char *text)
         return;
     }
 
-    ESP_LOGI(TAG, "User said: %s", text);
-
-    char assistant_text[AI_MAX_RESPONSE_SIZE] = {0};
-    esp_err_t err = app_runtime_run_chat_turn(text, assistant_text, sizeof(assistant_text));
-    if (err != ESP_OK) {
+    const char *input = app_skip_text_spaces(text);
+    if (input == NULL || input[0] == '\0') {
+        ESP_LOGW(TAG, "Empty STT result after trim");
         return;
     }
 
-    app_config_t *app_config = config_get();
-    (void)audio_set_volume(app_config->volume);
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+    (void)app_runtime_process_chat_text(input);
+    return;
+#else
+#if CONFIG_ENABLE_VOICE_WAKEUP
+    if (s_runtime.wakeup_armed && app_wakeup_window_expired()) {
+        s_runtime.wakeup_armed = false;
+        ESP_LOGI(TAG, "Wakeup window expired");
+    }
+
+    if (!s_runtime.wakeup_armed) {
+        const char *query = NULL;
+        if (!app_wakeup_match(input, &query)) {
+            ESP_LOGI(TAG, "STT ignored (wake phrase required): %s", input);
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("Say wake phrase first");
+            }
+            return;
+        }
+
+        if (query == NULL || query[0] == '\0') {
+            s_runtime.wakeup_armed = true;
+            s_runtime.wakeup_armed_tick = xTaskGetTickCount();
+            ESP_LOGI(TAG, "Wake phrase matched, waiting for next utterance");
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("Wakeup matched, speak now");
+            }
+            return;
+        }
+
+        s_runtime.wakeup_armed = false;
+        (void)app_runtime_process_chat_text(query);
+        return;
+    }
+
+    s_runtime.wakeup_armed = false;
+    (void)app_runtime_process_chat_text(input);
+    return;
+#else
+    (void)app_runtime_process_chat_text(input);
+#endif
+#endif
 }
 
 void app_runtime_handle_audio_playback_complete(void)

@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 #define AI_MAX_MODEL_NAME      32
-#define AI_MAX_API_KEY         128
+#define AI_MAX_API_KEY         384
 #define AI_MAX_BASE_URL        128
 #define AI_MAX_RESPONSE_SIZE   4096
 
@@ -18,6 +18,9 @@ typedef enum {
     AI_PROVIDER_OPENAI = 0,
     AI_PROVIDER_ZHIPU,
     AI_PROVIDER_DEEPSEEK,
+    AI_PROVIDER_KIMI,
+    AI_PROVIDER_MINIMAX,
+    AI_PROVIDER_OPENROUTER,
     AI_PROVIDER_CUSTOM,
     AI_PROVIDER_MAX
 } ai_provider_type_t;

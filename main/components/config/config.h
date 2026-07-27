@@ -9,9 +9,10 @@ extern "C" {
 
 #define WIFI_SSID_SIZE        32
 #define WIFI_PASSWORD_SIZE    64
-#define API_KEY_SIZE          128
+#define API_KEY_SIZE          384
 #define BASE_URL_SIZE         128
 #define MODEL_NAME_SIZE       64
+#define OPENROUTER_HEADER_SIZE 128
 #define VOICE_NAME_SIZE       64
 #define APP_ID_SIZE           64
 #define ACCESS_TOKEN_SIZE     256
@@ -24,6 +25,9 @@ typedef enum {
     AI_PROVIDER_CONFIG_OPENAI = 0,
     AI_PROVIDER_CONFIG_ZHIPU,
     AI_PROVIDER_CONFIG_DEEPSEEK,
+    AI_PROVIDER_CONFIG_KIMI,
+    AI_PROVIDER_CONFIG_MINIMAX,
+    AI_PROVIDER_CONFIG_OPENROUTER,
     AI_PROVIDER_CONFIG_MAX
 } ai_provider_config_t;
 
@@ -58,6 +62,20 @@ typedef struct app_config_t {
     char deepseek_api_key[API_KEY_SIZE];
     char deepseek_base_url[BASE_URL_SIZE];
     char deepseek_model_name[MODEL_NAME_SIZE];
+
+    char kimi_api_key[API_KEY_SIZE];
+    char kimi_base_url[BASE_URL_SIZE];
+    char kimi_model_name[MODEL_NAME_SIZE];
+
+    char minimax_api_key[API_KEY_SIZE];
+    char minimax_base_url[BASE_URL_SIZE];
+    char minimax_model_name[MODEL_NAME_SIZE];
+
+    char openrouter_api_key[API_KEY_SIZE];
+    char openrouter_base_url[BASE_URL_SIZE];
+    char openrouter_model_name[MODEL_NAME_SIZE];
+    char openrouter_http_referer[OPENROUTER_HEADER_SIZE];
+    char openrouter_x_title[OPENROUTER_HEADER_SIZE];
 
     /* STT provider config */
     voice_provider_config_t stt_provider;
@@ -133,6 +151,8 @@ esp_err_t config_set_ai_credentials_for_provider(ai_provider_config_t provider,
                                                  const char *api_key,
                                                  const char *base_url,
                                                  const char *model_name);
+esp_err_t config_set_openrouter_headers(const char *http_referer,
+                                        const char *x_title);
 
 esp_err_t config_set_stt_provider(voice_provider_config_t provider);
 esp_err_t config_set_tts_provider(voice_provider_config_t provider);

@@ -41,7 +41,51 @@
 #endif
 
 #ifndef CONFIG_DEEPSEEK_MODEL_DEFAULT
-#define CONFIG_DEEPSEEK_MODEL_DEFAULT "deepseek-chat"
+#define CONFIG_DEEPSEEK_MODEL_DEFAULT "deepseek-v4-flash"
+#endif
+
+#ifndef CONFIG_KIMI_API_KEY_DEFAULT
+#define CONFIG_KIMI_API_KEY_DEFAULT ""
+#endif
+
+#ifndef CONFIG_KIMI_BASE_URL_DEFAULT
+#define CONFIG_KIMI_BASE_URL_DEFAULT "https://api.moonshot.cn/v1/chat/completions"
+#endif
+
+#ifndef CONFIG_KIMI_MODEL_DEFAULT
+#define CONFIG_KIMI_MODEL_DEFAULT "moonshot-v1-8k"
+#endif
+
+#ifndef CONFIG_MINIMAX_API_KEY_DEFAULT
+#define CONFIG_MINIMAX_API_KEY_DEFAULT ""
+#endif
+
+#ifndef CONFIG_MINIMAX_BASE_URL_DEFAULT
+#define CONFIG_MINIMAX_BASE_URL_DEFAULT "https://api.minimax.chat/v1/chat/completions"
+#endif
+
+#ifndef CONFIG_MINIMAX_MODEL_DEFAULT
+#define CONFIG_MINIMAX_MODEL_DEFAULT "MiniMax-Text-01"
+#endif
+
+#ifndef CONFIG_OPENROUTER_API_KEY_DEFAULT
+#define CONFIG_OPENROUTER_API_KEY_DEFAULT ""
+#endif
+
+#ifndef CONFIG_OPENROUTER_BASE_URL_DEFAULT
+#define CONFIG_OPENROUTER_BASE_URL_DEFAULT "https://openrouter.ai/api/v1/chat/completions"
+#endif
+
+#ifndef CONFIG_OPENROUTER_MODEL_DEFAULT
+#define CONFIG_OPENROUTER_MODEL_DEFAULT "deepseek/deepseek-chat-v3-0324:free"
+#endif
+
+#ifndef CONFIG_OPENROUTER_HTTP_REFERER_DEFAULT
+#define CONFIG_OPENROUTER_HTTP_REFERER_DEFAULT ""
+#endif
+
+#ifndef CONFIG_OPENROUTER_X_TITLE_DEFAULT
+#define CONFIG_OPENROUTER_X_TITLE_DEFAULT "esp32-ai-box"
 #endif
 
 #ifndef CONFIG_VOICE_VOLCENGINE_APP_ID
@@ -110,6 +154,25 @@
 
 #ifndef CONFIG_VOICE_CUSTOM_TTS_VOICE
 #define CONFIG_VOICE_CUSTOM_TTS_VOICE ""
+#endif
+
+/* Voice gateway macros are only defined when the feature (and its dependent
+ * options) are enabled in menuconfig. Provide fallbacks so the code compiles
+ * regardless of the menuconfig selection. */
+#ifndef CONFIG_ENABLE_VOICE_GATEWAY
+#define CONFIG_ENABLE_VOICE_GATEWAY 0
+#endif
+
+#ifndef CONFIG_DEFAULT_VOICE_GATEWAY_URL
+#define CONFIG_DEFAULT_VOICE_GATEWAY_URL ""
+#endif
+
+#ifndef CONFIG_DEFAULT_VOICE_GATEWAY_TOKEN
+#define CONFIG_DEFAULT_VOICE_GATEWAY_TOKEN ""
+#endif
+
+#ifndef CONFIG_ENABLE_BARGE_IN
+#define CONFIG_ENABLE_BARGE_IN 0
 #endif
 
 #define VOLCENGINE_STT_ASYNC_BASE_URL "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
@@ -207,6 +270,21 @@ static bool config_get_chat_profile_slots(ai_provider_config_t provider,
             slots->base_url = (config_string_slot_t){s_config.deepseek_base_url, sizeof(s_config.deepseek_base_url)};
             slots->model_name = (config_string_slot_t){s_config.deepseek_model_name, sizeof(s_config.deepseek_model_name)};
             return true;
+        case AI_PROVIDER_CONFIG_KIMI:
+            slots->api_key = (config_string_slot_t){s_config.kimi_api_key, sizeof(s_config.kimi_api_key)};
+            slots->base_url = (config_string_slot_t){s_config.kimi_base_url, sizeof(s_config.kimi_base_url)};
+            slots->model_name = (config_string_slot_t){s_config.kimi_model_name, sizeof(s_config.kimi_model_name)};
+            return true;
+        case AI_PROVIDER_CONFIG_MINIMAX:
+            slots->api_key = (config_string_slot_t){s_config.minimax_api_key, sizeof(s_config.minimax_api_key)};
+            slots->base_url = (config_string_slot_t){s_config.minimax_base_url, sizeof(s_config.minimax_base_url)};
+            slots->model_name = (config_string_slot_t){s_config.minimax_model_name, sizeof(s_config.minimax_model_name)};
+            return true;
+        case AI_PROVIDER_CONFIG_OPENROUTER:
+            slots->api_key = (config_string_slot_t){s_config.openrouter_api_key, sizeof(s_config.openrouter_api_key)};
+            slots->base_url = (config_string_slot_t){s_config.openrouter_base_url, sizeof(s_config.openrouter_base_url)};
+            slots->model_name = (config_string_slot_t){s_config.openrouter_model_name, sizeof(s_config.openrouter_model_name)};
+            return true;
         default:
             return false;
     }
@@ -275,6 +353,12 @@ static ai_provider_config_t config_default_provider(void)
     return AI_PROVIDER_CONFIG_OPENAI;
 #elif CONFIG_AI_PROVIDER_ZHIPU
     return AI_PROVIDER_CONFIG_ZHIPU;
+#elif CONFIG_AI_PROVIDER_KIMI
+    return AI_PROVIDER_CONFIG_KIMI;
+#elif CONFIG_AI_PROVIDER_MINIMAX
+    return AI_PROVIDER_CONFIG_MINIMAX;
+#elif CONFIG_AI_PROVIDER_OPENROUTER
+    return AI_PROVIDER_CONFIG_OPENROUTER;
 #else
     return AI_PROVIDER_CONFIG_DEEPSEEK;
 #endif
@@ -501,6 +585,24 @@ static void config_reset_chat_profile_defaults(void)
     config_copy_string(s_config.deepseek_api_key, sizeof(s_config.deepseek_api_key), CONFIG_DEEPSEEK_API_KEY_DEFAULT);
     config_copy_string(s_config.deepseek_base_url, sizeof(s_config.deepseek_base_url), CONFIG_DEEPSEEK_BASE_URL_DEFAULT);
     config_copy_string(s_config.deepseek_model_name, sizeof(s_config.deepseek_model_name), CONFIG_DEEPSEEK_MODEL_DEFAULT);
+
+    config_copy_string(s_config.kimi_api_key, sizeof(s_config.kimi_api_key), CONFIG_KIMI_API_KEY_DEFAULT);
+    config_copy_string(s_config.kimi_base_url, sizeof(s_config.kimi_base_url), CONFIG_KIMI_BASE_URL_DEFAULT);
+    config_copy_string(s_config.kimi_model_name, sizeof(s_config.kimi_model_name), CONFIG_KIMI_MODEL_DEFAULT);
+
+    config_copy_string(s_config.minimax_api_key, sizeof(s_config.minimax_api_key), CONFIG_MINIMAX_API_KEY_DEFAULT);
+    config_copy_string(s_config.minimax_base_url, sizeof(s_config.minimax_base_url), CONFIG_MINIMAX_BASE_URL_DEFAULT);
+    config_copy_string(s_config.minimax_model_name, sizeof(s_config.minimax_model_name), CONFIG_MINIMAX_MODEL_DEFAULT);
+
+    config_copy_string(s_config.openrouter_api_key, sizeof(s_config.openrouter_api_key), CONFIG_OPENROUTER_API_KEY_DEFAULT);
+    config_copy_string(s_config.openrouter_base_url, sizeof(s_config.openrouter_base_url), CONFIG_OPENROUTER_BASE_URL_DEFAULT);
+    config_copy_string(s_config.openrouter_model_name, sizeof(s_config.openrouter_model_name), CONFIG_OPENROUTER_MODEL_DEFAULT);
+    config_copy_string(s_config.openrouter_http_referer,
+                       sizeof(s_config.openrouter_http_referer),
+                       CONFIG_OPENROUTER_HTTP_REFERER_DEFAULT);
+    config_copy_string(s_config.openrouter_x_title,
+                       sizeof(s_config.openrouter_x_title),
+                       CONFIG_OPENROUTER_X_TITLE_DEFAULT);
 }
 
 static esp_err_t config_update_provider_profile(ai_provider_config_t provider,
@@ -725,6 +827,26 @@ esp_err_t config_load_from_nvs(void)
     (void)config_nvs_get_str(nvs_handle, "ds_url", s_config.deepseek_base_url, sizeof(s_config.deepseek_base_url));
     (void)config_nvs_get_str(nvs_handle, "ds_model", s_config.deepseek_model_name, sizeof(s_config.deepseek_model_name));
 
+    (void)config_nvs_get_str(nvs_handle, "km_key", s_config.kimi_api_key, sizeof(s_config.kimi_api_key));
+    (void)config_nvs_get_str(nvs_handle, "km_url", s_config.kimi_base_url, sizeof(s_config.kimi_base_url));
+    (void)config_nvs_get_str(nvs_handle, "km_model", s_config.kimi_model_name, sizeof(s_config.kimi_model_name));
+
+    (void)config_nvs_get_str(nvs_handle, "mm_key", s_config.minimax_api_key, sizeof(s_config.minimax_api_key));
+    (void)config_nvs_get_str(nvs_handle, "mm_url", s_config.minimax_base_url, sizeof(s_config.minimax_base_url));
+    (void)config_nvs_get_str(nvs_handle, "mm_model", s_config.minimax_model_name, sizeof(s_config.minimax_model_name));
+
+    (void)config_nvs_get_str(nvs_handle, "or_key", s_config.openrouter_api_key, sizeof(s_config.openrouter_api_key));
+    (void)config_nvs_get_str(nvs_handle, "or_url", s_config.openrouter_base_url, sizeof(s_config.openrouter_base_url));
+    (void)config_nvs_get_str(nvs_handle, "or_model", s_config.openrouter_model_name, sizeof(s_config.openrouter_model_name));
+    (void)config_nvs_get_str(nvs_handle,
+                             "or_ref",
+                             s_config.openrouter_http_referer,
+                             sizeof(s_config.openrouter_http_referer));
+    (void)config_nvs_get_str(nvs_handle,
+                             "or_title",
+                             s_config.openrouter_x_title,
+                             sizeof(s_config.openrouter_x_title));
+
     has_legacy_api_key = config_nvs_get_str(nvs_handle, "api_key", legacy_api_key, sizeof(legacy_api_key));
     has_legacy_base_url = config_nvs_get_str(nvs_handle, "base_url", legacy_base_url, sizeof(legacy_base_url));
     has_legacy_model_name = config_nvs_get_str(nvs_handle, "model_name", legacy_model_name, sizeof(legacy_model_name));
@@ -929,6 +1051,20 @@ esp_err_t config_save_to_nvs(void)
     nvs_set_str(nvs_handle, "ds_url", s_config.deepseek_base_url);
     nvs_set_str(nvs_handle, "ds_model", s_config.deepseek_model_name);
 
+    nvs_set_str(nvs_handle, "km_key", s_config.kimi_api_key);
+    nvs_set_str(nvs_handle, "km_url", s_config.kimi_base_url);
+    nvs_set_str(nvs_handle, "km_model", s_config.kimi_model_name);
+
+    nvs_set_str(nvs_handle, "mm_key", s_config.minimax_api_key);
+    nvs_set_str(nvs_handle, "mm_url", s_config.minimax_base_url);
+    nvs_set_str(nvs_handle, "mm_model", s_config.minimax_model_name);
+
+    nvs_set_str(nvs_handle, "or_key", s_config.openrouter_api_key);
+    nvs_set_str(nvs_handle, "or_url", s_config.openrouter_base_url);
+    nvs_set_str(nvs_handle, "or_model", s_config.openrouter_model_name);
+    nvs_set_str(nvs_handle, "or_ref", s_config.openrouter_http_referer);
+    nvs_set_str(nvs_handle, "or_title", s_config.openrouter_x_title);
+
     nvs_erase_key(nvs_handle, "api_key");
     nvs_erase_key(nvs_handle, "base_url");
     nvs_erase_key(nvs_handle, "model_name");
@@ -1110,6 +1246,27 @@ esp_err_t config_set_ai_credentials_for_provider(ai_provider_config_t provider,
 
     if (provider == s_config.provider) {
         config_apply_active_chat_profile();
+    }
+
+    return config_save_to_nvs();
+}
+
+esp_err_t config_set_openrouter_headers(const char *http_referer,
+                                        const char *x_title)
+{
+    if (http_referer == NULL && x_title == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (http_referer != NULL) {
+        config_copy_string(s_config.openrouter_http_referer,
+                           sizeof(s_config.openrouter_http_referer),
+                           http_referer);
+    }
+    if (x_title != NULL) {
+        config_copy_string(s_config.openrouter_x_title,
+                           sizeof(s_config.openrouter_x_title),
+                           x_title);
     }
 
     return config_save_to_nvs();

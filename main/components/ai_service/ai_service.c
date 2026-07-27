@@ -25,6 +25,12 @@ ai_service_t* ai_service_create(ai_provider_type_t provider) {
         case AI_PROVIDER_DEEPSEEK:
             service = deepseek_service_create();
             break;
+
+        case AI_PROVIDER_KIMI:
+        case AI_PROVIDER_MINIMAX:
+        case AI_PROVIDER_OPENROUTER:
+            service = openai_service_create();
+            break;
             
         case AI_PROVIDER_CUSTOM:
             ESP_LOGE(TAG, "Custom AI provider not yet implemented");
