@@ -31,6 +31,9 @@
 static uint8_t *s_frame_buf = NULL;
 static SemaphoreHandle_t s_frame_mutex = NULL;
 static lv_display_flush_cb_t s_orig_flush_cb = NULL;
+static TaskHandle_t s_server_task = NULL;
+static SemaphoreHandle_t s_startup_sem = NULL;
+static esp_err_t s_startup_result = ESP_FAIL;
 
 /* Intercept LVGL flush to mirror pixel data into s_frame_buf */
 static void mirror_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
@@ -147,7 +150,14 @@ static void screenshot_task(void *arg)
     ESP_LOGI(TAG, "screenshot task started");
 
     int srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (srv < 0) { ESP_LOGE(TAG, "socket: %d", errno); vTaskDelete(NULL); return; }
+    if (srv < 0) {
+        ESP_LOGE(TAG, "socket: %d", errno);
+        s_startup_result = ESP_FAIL;
+        xSemaphoreGive(s_startup_sem);
+        s_server_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     int opt = 1;
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -162,11 +172,16 @@ static void screenshot_task(void *arg)
         listen(srv, 1) != 0) {
         ESP_LOGE(TAG, "bind/listen: %d", errno);
         close(srv);
+        s_startup_result = ESP_FAIL;
+        xSemaphoreGive(s_startup_sem);
+        s_server_task = NULL;
         vTaskDelete(NULL);
         return;
     }
 
     ESP_LOGI(TAG, "listening on port %d", CONFIG_UI_DEBUG_SCREENSHOT_PORT);
+    s_startup_result = ESP_OK;
+    xSemaphoreGive(s_startup_sem);
 
     for (;;) {
         struct sockaddr_in cli;
@@ -183,6 +198,10 @@ static void screenshot_task(void *arg)
 
 esp_err_t debug_screenshot_start(void)
 {
+    if (s_server_task != NULL) {
+        return ESP_OK;
+    }
+
     /* Allocate mirror buffer in PSRAM */
     s_frame_buf = (uint8_t *)heap_caps_malloc(FRAME_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_frame_buf) {
@@ -197,6 +216,14 @@ esp_err_t debug_screenshot_start(void)
     s_frame_mutex = xSemaphoreCreateMutex();
     if (!s_frame_mutex) {
         free(s_frame_buf); s_frame_buf = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    s_startup_sem = xSemaphoreCreateBinary();
+    if (s_startup_sem == NULL) {
+        vSemaphoreDelete(s_frame_mutex);
+        s_frame_mutex = NULL;
+        free(s_frame_buf);
+        s_frame_buf = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -215,8 +242,20 @@ esp_err_t debug_screenshot_start(void)
         ESP_LOGW(TAG, "could not acquire LVGL lock for flush hook");
     }
 
-    if (xTaskCreatePinnedToCore(screenshot_task, "dbg_shot", 8192, NULL, 3, NULL, 0) != pdPASS) {
+    s_startup_result = ESP_FAIL;
+    if (xTaskCreatePinnedToCore(screenshot_task, "dbg_shot", 8192, NULL, 3,
+                                &s_server_task, 0) != pdPASS) {
+        vSemaphoreDelete(s_startup_sem);
+        s_startup_sem = NULL;
         return ESP_ERR_NO_MEM;
+    }
+
+    if (xSemaphoreTake(s_startup_sem, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "server startup timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_startup_result != ESP_OK) {
+        return s_startup_result;
     }
 
     ESP_LOGI(TAG, "started (frame buf %d bytes @ %p)", FRAME_BUF_SIZE, (void *)s_frame_buf);

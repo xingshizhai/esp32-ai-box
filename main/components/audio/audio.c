@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_codec_dev_defaults.h"
@@ -123,6 +124,7 @@ static bool         s_stream_capture_resume_monitor = false;
 static int16_t     *s_stream_raw_buf = NULL;
 static int          s_stream_raw_buf_bytes = 0;
 static int          s_stream_selected_ch = -1;
+static SemaphoreHandle_t s_stream_mutex = NULL;
 
 static esp_err_t audio_stream_ensure_raw_buffer(int required_bytes)
 {
@@ -249,6 +251,14 @@ esp_err_t audio_init(void)
     esp_err_t ret = ESP_OK;
     uint8_t spk_addr = normalize_codec_i2c_addr(CONFIG_AUDIO_ES8311_I2C_ADDR);
     uint8_t mic_addr = normalize_codec_i2c_addr(CONFIG_AUDIO_ES7210_I2C_ADDR);
+
+    if (s_stream_mutex == NULL) {
+        s_stream_mutex = xSemaphoreCreateMutex();
+        if (s_stream_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to create stream capture mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     ESP_LOGI(TAG, "Codec I2C addr config: ES8311=0x%02X -> 0x%02X, ES7210=0x%02X -> 0x%02X",
              CONFIG_AUDIO_ES8311_I2C_ADDR, spk_addr,
@@ -693,11 +703,18 @@ void audio_register_mic_level_callback(audio_mic_level_callback_t callback)
 
 esp_err_t audio_stream_start_capture(void)
 {
+    if (s_stream_mutex == NULL ||
+        xSemaphoreTake(s_stream_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (!s_hw_ready || s_mic_dev == NULL) {
         ESP_LOGW(TAG, "Stream capture unavailable: audio hardware not ready");
+        xSemaphoreGive(s_stream_mutex);
         return ESP_ERR_INVALID_STATE;
     }
     if (s_stream_capture_active) {
+        xSemaphoreGive(s_stream_mutex);
         return ESP_OK;
     }
 
@@ -715,6 +732,7 @@ esp_err_t audio_stream_start_capture(void)
     s_stream_selected_ch = -1;
     s_stream_capture_active = true;
     ESP_LOGI(TAG, "Stream capture started");
+    xSemaphoreGive(s_stream_mutex);
     return ESP_OK;
 }
 
@@ -723,18 +741,27 @@ esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, i
     if (pcm_data == NULL || pcm_len == NULL || pcm_capacity < BYTES_PER_SAMPLE) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    if (s_stream_mutex == NULL ||
+        xSemaphoreTake(s_stream_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (!s_stream_capture_active || !s_hw_ready || s_mic_dev == NULL) {
+        xSemaphoreGive(s_stream_mutex);
         return ESP_ERR_INVALID_STATE;
     }
 
     int frames_to_read = pcm_capacity / BYTES_PER_SAMPLE;
     if (frames_to_read <= 0) {
+        xSemaphoreGive(s_stream_mutex);
         return ESP_ERR_INVALID_ARG;
     }
 
     int raw_bytes_to_read = frames_to_read * MIC_CHANNELS * BYTES_PER_SAMPLE;
     esp_err_t mem_ret = audio_stream_ensure_raw_buffer(raw_bytes_to_read);
     if (mem_ret != ESP_OK) {
+        xSemaphoreGive(s_stream_mutex);
         return mem_ret;
     }
 
@@ -747,6 +774,7 @@ esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, i
     }
     if (read_rc != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "Stream capture read failed: %d", read_rc);
+        xSemaphoreGive(s_stream_mutex);
         return ESP_FAIL;
     }
 
@@ -770,12 +798,19 @@ esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, i
     }
 
     *pcm_len = frames_to_read * BYTES_PER_SAMPLE;
+    xSemaphoreGive(s_stream_mutex);
     return ESP_OK;
 }
 
 esp_err_t audio_stream_stop_capture(void)
 {
+    if (s_stream_mutex == NULL ||
+        xSemaphoreTake(s_stream_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (!s_stream_capture_active) {
+        xSemaphoreGive(s_stream_mutex);
         return ESP_OK;
     }
 
@@ -794,6 +829,7 @@ esp_err_t audio_stream_stop_capture(void)
     }
 
     ESP_LOGI(TAG, "Stream capture stopped");
+    xSemaphoreGive(s_stream_mutex);
     return ESP_OK;
 }
 

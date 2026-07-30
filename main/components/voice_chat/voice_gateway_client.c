@@ -6,6 +6,7 @@
 #include "cJSON.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "embedded_voice_gateway.h"
 
 static const char *TAG = "voice_gateway";
 
@@ -26,6 +27,8 @@ typedef struct {
 } voice_http_rx_buf_t;
 
 struct voice_gateway_client {
+    bool embedded;
+    embedded_voice_gateway_t *embedded_gateway;
     char *base_url;
     char *access_token;
     int timeout_ms;
@@ -290,7 +293,8 @@ static esp_err_t voice_parse_text_from_json(const uint8_t *json_data,
 
 voice_gateway_client_t *voice_gateway_client_create(const voice_gateway_client_cfg_t *cfg)
 {
-    if (cfg == NULL || cfg->base_url == NULL || cfg->base_url[0] == '\0') {
+    if (cfg == NULL ||
+        (!cfg->embedded && (cfg->base_url == NULL || cfg->base_url[0] == '\0'))) {
         return NULL;
     }
 
@@ -299,9 +303,28 @@ voice_gateway_client_t *voice_gateway_client_create(const voice_gateway_client_c
         return NULL;
     }
 
+    client->embedded = cfg->embedded;
+    client->timeout_ms = cfg->timeout_ms;
+    if (client->embedded) {
+        embedded_voice_gateway_cfg_t embedded_cfg = {
+            .api_key = cfg->embedded_api_key,
+            .websocket_url = cfg->embedded_websocket_url,
+            .stt_model = cfg->embedded_stt_model,
+            .tts_model = cfg->embedded_tts_model,
+            .tts_voice = cfg->embedded_tts_voice,
+            .timeout_ms = cfg->timeout_ms,
+        };
+        client->embedded_gateway = embedded_voice_gateway_create(&embedded_cfg);
+        if (client->embedded_gateway == NULL) {
+            free(client);
+            return NULL;
+        }
+        ESP_LOGI(TAG, "embedded gateway client created (direct DashScope)");
+        return client;
+    }
+
     client->base_url = strdup(cfg->base_url);
     client->access_token = voice_strdup_or_empty(cfg->access_token);
-    client->timeout_ms = cfg->timeout_ms;
 
     client->stt_provider = voice_strdup_or_empty(cfg->stt_provider);
     client->stt_model_name = voice_strdup_or_empty(cfg->stt_model_name);
@@ -378,6 +401,7 @@ void voice_gateway_client_destroy(voice_gateway_client_t *client)
         return;
     }
 
+    embedded_voice_gateway_destroy(client->embedded_gateway);
     free(client->base_url);
     free(client->access_token);
     free(client->stt_provider);
@@ -406,6 +430,11 @@ esp_err_t voice_gateway_stt_start(voice_gateway_client_t *client,
 {
     if (client == NULL || session_id == NULL || sample_rate_hz <= 0) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (client->embedded) {
+        return embedded_voice_gateway_stt_start(client->embedded_gateway,
+                                                session_id,
+                                                sample_rate_hz);
     }
 
     char url[256] = {0};
@@ -551,6 +580,9 @@ esp_err_t voice_gateway_stt_send_audio(voice_gateway_client_t *client,
     if (client == NULL || session_id == NULL || pcm == NULL || len <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (client->embedded) {
+        return embedded_voice_gateway_stt_send_audio(client->embedded_gateway, pcm, len);
+    }
 
     char query[160] = {0};
     snprintf(query, sizeof(query), "session_id=%s", session_id);
@@ -597,6 +629,11 @@ esp_err_t voice_gateway_stt_stop(voice_gateway_client_t *client,
     }
 
     out_text[0] = '\0';
+    if (client->embedded) {
+        return embedded_voice_gateway_stt_stop(client->embedded_gateway,
+                                               out_text,
+                                               out_text_size);
+    }
 
     char url[256] = {0};
     esp_err_t err = voice_build_url(client, VOICE_STT_STOP_PATH, NULL, url, sizeof(url));
@@ -656,6 +693,14 @@ esp_err_t voice_gateway_tts_synthesize(voice_gateway_client_t *client,
 
     *audio_data = NULL;
     *audio_len = 0;
+    if (client->embedded) {
+        return embedded_voice_gateway_tts(client->embedded_gateway,
+                                          session_id,
+                                          text,
+                                          voice_name,
+                                          audio_data,
+                                          audio_len);
+    }
 
     char url[256] = {0};
     esp_err_t err = voice_build_url(client, VOICE_TTS_PATH, NULL, url, sizeof(url));

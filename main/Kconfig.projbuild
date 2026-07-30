@@ -1,5 +1,35 @@
 menu "Ai-Box Configuration"
 
+    menu "Device Debugging"
+
+        config UI_DEBUG_SCREENSHOT_ENABLED
+            bool "Enable remote LVGL screenshots"
+            default y
+            help
+                Mirror the LVGL framebuffer and expose it over TCP so the
+                development tools can inspect the physical device UI.
+
+        config UI_DEBUG_SCREENSHOT_PORT
+            int "Screenshot TCP port"
+            depends on UI_DEBUG_SCREENSHOT_ENABLED
+            range 1024 65535
+            default 3333
+
+        config UI_DEBUG_INPUT_ENABLED
+            bool "Enable remote synthetic touch input"
+            default y
+            help
+                Expose a TCP endpoint that injects pointer events into LVGL.
+                This is intended for development and UI regression testing.
+
+        config UI_DEBUG_INPUT_PORT
+            int "Synthetic input TCP port"
+            depends on UI_DEBUG_INPUT_ENABLED
+            range 1024 65535
+            default 3334
+
+    endmenu
+
     config WIFI_SSID
         string "WiFi SSID"
         default ""
@@ -275,20 +305,70 @@ menu "Ai-Box Configuration"
 
         menu "Voice Gateway"
 
-            config ENABLE_VOICE_GATEWAY
-                bool "Enable Voice Gateway by default"
-                default y
+            choice VOICE_GATEWAY_MODE
+                prompt "Voice Gateway Mode"
+                default VOICE_GATEWAY_MODE_EMBEDDED
                 help
-                    If enabled, speech requests are routed through a dedicated gateway service.
+                    Embedded connects the ESP32 directly to DashScope.
+                    External uses the compatible HTTP gateway service.
+
+                config VOICE_GATEWAY_MODE_EMBEDDED
+                    bool "Embedded on ESP32 (Alibaba Cloud DashScope)"
+
+                config VOICE_GATEWAY_MODE_EXTERNAL
+                    bool "External HTTP gateway"
+
+                config VOICE_GATEWAY_MODE_DISABLED
+                    bool "Disabled"
+            endchoice
+
+            config ENABLE_VOICE_GATEWAY
+                bool
+                default n if VOICE_GATEWAY_MODE_DISABLED
+                default y
+
+            config VOICE_DASHSCOPE_API_KEY
+                string "Alibaba Cloud DashScope API Key"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default ""
+                help
+                    Alibaba Cloud Model Studio (DashScope) API key stored on
+                    the device and used by both Fun-ASR and CosyVoice.
+
+            config VOICE_DASHSCOPE_WEBSOCKET_URL
+                string "Alibaba Cloud DashScope WebSocket URL"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "wss://dashscope.aliyuncs.com/api-ws/v1/inference/"
+
+            config VOICE_DASHSCOPE_STT_MODEL
+                string "Alibaba Cloud ASR Model"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "fun-asr-realtime"
+                help
+                    DashScope speech recognition model used by the ESP32.
+
+            config VOICE_DASHSCOPE_TTS_MODEL
+                string "Alibaba Cloud TTS Model"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "cosyvoice-v3-flash"
+                help
+                    DashScope speech synthesis model used by the ESP32.
+
+            config VOICE_DASHSCOPE_TTS_VOICE
+                string "Alibaba Cloud TTS Voice"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "longanyang"
 
             config DEFAULT_VOICE_GATEWAY_URL
                 string "Default Voice Gateway URL"
+                depends on VOICE_GATEWAY_MODE_EXTERNAL
                 default ""
                 help
-                    Voice gateway endpoint (recommended for mainland China deployments).
+                    Compatible external HTTP gateway endpoint.
 
             config DEFAULT_VOICE_GATEWAY_TOKEN
                 string "Default Voice Gateway Token"
+                depends on VOICE_GATEWAY_MODE_EXTERNAL
                 default ""
                 help
                     Optional static token used to authenticate against the voice gateway.
@@ -296,6 +376,22 @@ menu "Ai-Box Configuration"
         endmenu
 
         menu "Voice Runtime"
+
+            config ENABLE_LOCAL_OFFLINE_WAKEUP
+                bool "Enable on-device WakeNet wake word"
+                default y
+                help
+                    Continuously run Espressif WakeNet on the ESP32-S3.
+                    Audio stays on the device until the wake word is detected.
+                    The default model recognizes "你好小智".
+
+            config LOCAL_WAKEUP_COOLDOWN_MS
+                int "Wake word cooldown (ms)"
+                depends on ENABLE_LOCAL_OFFLINE_WAKEUP
+                default 2500
+                range 500 10000
+                help
+                    Minimum interval between two accepted wake word events.
 
             config ENABLE_BARGE_IN
                 bool "Enable barge-in by default"

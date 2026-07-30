@@ -8,6 +8,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
@@ -25,6 +26,9 @@ typedef struct __attribute__((packed)) {
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static lv_point_t s_point;
 static lv_indev_state_t s_state = LV_INDEV_STATE_RELEASED;
+static TaskHandle_t s_server_task = NULL;
+static SemaphoreHandle_t s_startup_sem = NULL;
+static esp_err_t s_startup_result = ESP_FAIL;
 
 static void indev_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
@@ -98,6 +102,9 @@ static void input_task(void *arg)
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
         ESP_LOGE(TAG, "socket failed: errno %d", errno);
+        s_startup_result = ESP_FAIL;
+        xSemaphoreGive(s_startup_sem);
+        s_server_task = NULL;
         vTaskDelete(NULL);
         return;
     }
@@ -114,6 +121,9 @@ static void input_task(void *arg)
     if (bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         ESP_LOGE(TAG, "bind failed: errno %d", errno);
         close(listen_sock);
+        s_startup_result = ESP_FAIL;
+        xSemaphoreGive(s_startup_sem);
+        s_server_task = NULL;
         vTaskDelete(NULL);
         return;
     }
@@ -121,11 +131,16 @@ static void input_task(void *arg)
     if (listen(listen_sock, 1) != 0) {
         ESP_LOGE(TAG, "listen failed: errno %d", errno);
         close(listen_sock);
+        s_startup_result = ESP_FAIL;
+        xSemaphoreGive(s_startup_sem);
+        s_server_task = NULL;
         vTaskDelete(NULL);
         return;
     }
 
     ESP_LOGI(TAG, "synthetic input server listening on port %d", CONFIG_UI_DEBUG_INPUT_PORT);
+    s_startup_result = ESP_OK;
+    xSemaphoreGive(s_startup_sem);
 
     for (;;) {
         struct sockaddr_in src_addr;
@@ -144,6 +159,10 @@ static void input_task(void *arg)
 
 esp_err_t debug_input_start(void)
 {
+    if (s_server_task != NULL) {
+        return ESP_OK;
+    }
+
     lv_indev_t *indev = lv_indev_create();
     if (indev == NULL) {
         return ESP_ERR_NO_MEM;
@@ -153,11 +172,26 @@ esp_err_t debug_input_start(void)
     lv_indev_set_read_cb(indev, indev_read_cb);
     lv_indev_set_display(indev, lv_display_get_default());
 
-    if (xTaskCreatePinnedToCore(input_task, "dbg_input", 4096, NULL, 3, NULL, 0) != pdPASS) {
+    s_startup_sem = xSemaphoreCreateBinary();
+    if (s_startup_sem == NULL) {
+        lv_indev_delete(indev);
         return ESP_ERR_NO_MEM;
     }
 
-    return ESP_OK;
+    s_startup_result = ESP_FAIL;
+    if (xTaskCreatePinnedToCore(input_task, "dbg_input", 4096, NULL, 3,
+                                &s_server_task, 0) != pdPASS) {
+        vSemaphoreDelete(s_startup_sem);
+        s_startup_sem = NULL;
+        lv_indev_delete(indev);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xSemaphoreTake(s_startup_sem, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "server startup timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    return s_startup_result;
 }
 
 #else

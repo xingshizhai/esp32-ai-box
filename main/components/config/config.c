@@ -41,7 +41,7 @@
 #endif
 
 #ifndef CONFIG_DEEPSEEK_MODEL_DEFAULT
-#define CONFIG_DEEPSEEK_MODEL_DEFAULT "deepseek-v4-flash"
+#define CONFIG_DEEPSEEK_MODEL_DEFAULT "deepseek-chat"
 #endif
 
 #ifndef CONFIG_KIMI_API_KEY_DEFAULT

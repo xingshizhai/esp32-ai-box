@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "ui_debug_internal.h"
+#include "ui_font_zh_14.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -46,7 +47,7 @@ static ui_main_view_t s_main_view = {0};
 
 static const lv_font_t *ui_main_font(void)
 {
-    return LV_FONT_DEFAULT;
+    return &ui_font_zh_14;
 }
 
 static const char *ui_event_code_to_str(lv_event_code_t code)
@@ -192,6 +193,53 @@ static pet_mood_t ui_mood_from_status(const char *status)
     }
 
     return PET_MOOD_IDLE;
+}
+
+static void ui_apply_status_copy_locked(const char *status)
+{
+    if (s_main_view.hint_label == NULL || s_main_view.action_label == NULL ||
+        s_main_view.action_btn == NULL) {
+        return;
+    }
+
+    pet_mood_t mood = ui_mood_from_status(status);
+    const char *hint = "点击和我聊聊天";
+    const char *action = "开始对话";
+    uint32_t action_color = 0x2563EB;
+
+    switch (mood) {
+        case PET_MOOD_LISTEN:
+            hint = "聆听中";
+            action = "聆听中";
+            action_color = 0x059669;
+            break;
+        case PET_MOOD_THINK:
+            hint = "思考中";
+            action = "请稍候...";
+            action_color = 0x2563EB;
+            break;
+        case PET_MOOD_SPEAK:
+            hint = "说话中";
+            action = "播放中";
+            action_color = 0xDB2777;
+            break;
+        case PET_MOOD_ERROR:
+        case PET_MOOD_SAD:
+            hint = "错误，请返回调试";
+            action = "返回调试";
+            action_color = 0xE11D48;
+            break;
+        case PET_MOOD_HAPPY:
+            hint = "已连接，点击开始对话";
+            break;
+        case PET_MOOD_IDLE:
+        default:
+            break;
+    }
+
+    lv_label_set_text(s_main_view.hint_label, hint);
+    lv_label_set_text(s_main_view.action_label, action);
+    lv_obj_set_style_bg_color(s_main_view.action_btn, lv_color_hex(action_color), 0);
 }
 
 static void ui_action_button_event_cb(lv_event_t *event)
@@ -415,6 +463,8 @@ esp_err_t ui_init(void)
     lv_obj_set_style_text_font(s_main_view.hint_label, ui_main_font(), 0);
     lv_obj_set_style_text_color(s_main_view.hint_label, lv_color_hex(0x94A3B8), 0);
     lv_obj_align(s_main_view.hint_label, LV_ALIGN_TOP_MID, 0, 196);
+    /* The 240 px display only has room for one status line above the CTA. */
+    lv_obj_add_flag(s_main_view.hint_label, LV_OBJ_FLAG_HIDDEN);
 
     s_main_view.action_btn = lv_btn_create(s_main_panel);
     if (s_main_view.action_btn == NULL) {
@@ -605,6 +655,7 @@ esp_err_t ui_update_status(const char *status)
 
     lv_label_set_text(s_main_view.status_label, (status != NULL) ? status : "");
     ui_apply_pet_mood_locked(ui_mood_from_status(status));
+    ui_apply_status_copy_locked(status);
 
     lvgl_port_unlock();
     return ESP_OK;

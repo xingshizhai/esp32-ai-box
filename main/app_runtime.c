@@ -11,12 +11,20 @@
 #include "esp_log.h"
 
 #include "config.h"
+#include "provider_catalog.h"
 #include "ai_service.h"
 #include "conversation.h"
 #include "ui.h"
 #include "audio.h"
 #include "voice_session.h"
 #include "voice_gateway_client.h"
+#if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+#include "esp_afe_config.h"
+#include "esp_afe_sr_iface.h"
+#include "esp_afe_sr_models.h"
+#include "esp_wn_models.h"
+#include "model_path.h"
+#endif
 #if CONFIG_SDCARD_ENABLED
 #include "storage.h"
 #endif
@@ -78,20 +86,8 @@ static app_runtime_state_t s_runtime = {0};
 #define CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP 0
 #endif
 
-#ifndef CONFIG_LOCAL_WAKEUP_CHUNK_MS
-#define CONFIG_LOCAL_WAKEUP_CHUNK_MS 80
-#endif
-
-#ifndef CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD
-#define CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD 1800
-#endif
-
-#ifndef CONFIG_LOCAL_WAKEUP_SUSTAIN_MS
-#define CONFIG_LOCAL_WAKEUP_SUSTAIN_MS 240
-#endif
-
 #ifndef CONFIG_LOCAL_WAKEUP_COOLDOWN_MS
-#define CONFIG_LOCAL_WAKEUP_COOLDOWN_MS 3500
+#define CONFIG_LOCAL_WAKEUP_COOLDOWN_MS 2500
 #endif
 
 #if CONFIG_SDCARD_ENABLED
@@ -120,6 +116,28 @@ static app_runtime_state_t s_runtime = {0};
 
 #ifndef CONFIG_VOLCENGINE_STT_END_WINDOW_SIZE_MS
 #define CONFIG_VOLCENGINE_STT_END_WINDOW_SIZE_MS 800
+#endif
+
+#ifndef CONFIG_VOICE_GATEWAY_MODE_EMBEDDED
+#define CONFIG_VOICE_GATEWAY_MODE_EMBEDDED 0
+#endif
+#ifndef CONFIG_VOICE_GATEWAY_MODE_EXTERNAL
+#define CONFIG_VOICE_GATEWAY_MODE_EXTERNAL 0
+#endif
+#ifndef CONFIG_VOICE_DASHSCOPE_API_KEY
+#define CONFIG_VOICE_DASHSCOPE_API_KEY ""
+#endif
+#ifndef CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL
+#define CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL "wss://dashscope.aliyuncs.com/api-ws/v1/inference/"
+#endif
+#ifndef CONFIG_VOICE_DASHSCOPE_STT_MODEL
+#define CONFIG_VOICE_DASHSCOPE_STT_MODEL "fun-asr-realtime"
+#endif
+#ifndef CONFIG_VOICE_DASHSCOPE_TTS_MODEL
+#define CONFIG_VOICE_DASHSCOPE_TTS_MODEL "cosyvoice-v3-flash"
+#endif
+#ifndef CONFIG_VOICE_DASHSCOPE_TTS_VOICE
+#define CONFIG_VOICE_DASHSCOPE_TTS_VOICE "longanyang"
 #endif
 
 typedef struct {
@@ -379,56 +397,76 @@ static bool app_local_wakeup_should_pause(void)
            s_runtime.voice_round_req;
 }
 
-static int app_local_wakeup_peak_abs(const uint8_t *pcm, int pcm_len)
-{
-    if (pcm == NULL || pcm_len < 2) {
-        return 0;
-    }
-
-    const int16_t *samples = (const int16_t *)pcm;
-    int sample_count = pcm_len / (int)sizeof(int16_t);
-    int peak = 0;
-    for (int i = 0; i < sample_count; ++i) {
-        int v = samples[i];
-        if (v == INT16_MIN) {
-            v = INT16_MAX;
-        } else if (v < 0) {
-            v = -v;
-        }
-        if (v > peak) {
-            peak = v;
-        }
-    }
-    return peak;
-}
-
 static void app_local_wakeup_task(void *arg)
 {
     (void)arg;
 
-    const int sample_rate_hz = 16000;
-    const int chunk_ms = CONFIG_LOCAL_WAKEUP_CHUNK_MS;
-    const int chunk_bytes = (sample_rate_hz * chunk_ms * PCM_S16LE_BYTES_PER_SAMPLE) / 1000;
-    const int threshold = CONFIG_LOCAL_WAKEUP_PEAK_THRESHOLD;
-    const int sustain_ms = CONFIG_LOCAL_WAKEUP_SUSTAIN_MS;
     const TickType_t cooldown_ticks = pdMS_TO_TICKS(CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
 
-    uint8_t *chunk = (uint8_t *)malloc(chunk_bytes);
+    srmodel_list_t *models = esp_srmodel_init("model");
+    if (models == NULL) {
+        ESP_LOGE(TAG, "WakeNet: model partition is unavailable");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    char *model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, "nihaoxiaozhi");
+    if (model_name == NULL) {
+        ESP_LOGE(TAG, "WakeNet: 你好小智 model not found in model partition");
+        esp_srmodel_deinit(models);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    afe_config_t *afe_cfg = afe_config_init("M", models, AFE_TYPE_SR, AFE_MODE_LOW_COST);
+    if (afe_cfg == NULL) {
+        ESP_LOGE(TAG, "WakeNet: AFE config allocation failed");
+        esp_srmodel_deinit(models);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Wake-word-only pipeline: keep CPU/RAM use low and avoid cloud traffic. */
+    afe_cfg->aec_init = false;
+    afe_cfg->se_init = false;
+    afe_cfg->ns_init = false;
+    afe_cfg->vad_init = false;
+    afe_cfg->agc_init = false;
+    afe_cfg->wakenet_init = true;
+    afe_cfg->wakenet_model_name = model_name;
+    afe_cfg->wakenet_model_name_2 = NULL;
+    afe_cfg->wakenet_mode = DET_MODE_90;
+    afe_cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+
+    const esp_afe_sr_iface_t *afe_handle = esp_afe_handle_from_config(afe_cfg);
+    esp_afe_sr_data_t *afe_data =
+        (afe_handle != NULL) ? afe_handle->create_from_config(afe_cfg) : NULL;
+    afe_config_free(afe_cfg);
+    if (afe_handle == NULL || afe_data == NULL) {
+        ESP_LOGE(TAG, "WakeNet: failed to create AFE");
+        esp_srmodel_deinit(models);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    const int feed_samples = afe_handle->get_feed_chunksize(afe_data);
+    const int chunk_bytes = feed_samples * PCM_S16LE_BYTES_PER_SAMPLE;
+    uint8_t *chunk = (uint8_t *)malloc((size_t)chunk_bytes);
     if (chunk == NULL) {
-        ESP_LOGE(TAG, "Local wakeup: alloc failed (%d bytes)", chunk_bytes);
+        ESP_LOGE(TAG, "WakeNet: audio buffer allocation failed (%d bytes)", chunk_bytes);
+        afe_handle->destroy(afe_data);
+        esp_srmodel_deinit(models);
         vTaskDelete(NULL);
         return;
     }
 
     bool capture_started = false;
-    int active_ms = 0;
-
-    ESP_LOGI(TAG,
-             "Local wakeup enabled: chunk=%dms threshold=%d sustain=%dms cooldown=%dms",
-             chunk_ms,
-             threshold,
-             sustain_ms,
-             CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
+    ESP_LOGI(TAG, "WakeNet ready: phrase=你好小智 model=%s frame=%d samples cooldown=%dms",
+             model_name, feed_samples, CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
+    afe_handle->print_pipeline(afe_data);
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("Say: 你好小智");
+    }
 
     while (true) {
         if (app_local_wakeup_should_pause()) {
@@ -436,7 +474,6 @@ static void app_local_wakeup_task(void *arg)
                 (void)audio_stream_stop_capture();
                 capture_started = false;
             }
-            active_ms = 0;
             vTaskDelay(pdMS_TO_TICKS(60));
             continue;
         }
@@ -448,43 +485,44 @@ static void app_local_wakeup_task(void *arg)
                 continue;
             }
             capture_started = true;
-            active_ms = 0;
         }
 
         int pcm_len = 0;
         esp_err_t err = audio_stream_read_capture_chunk(chunk, chunk_bytes, &pcm_len);
         if (err != ESP_OK || pcm_len <= 0) {
-            active_ms = 0;
+            if (err == ESP_ERR_INVALID_STATE) {
+                capture_started = false;
+            }
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        int peak = app_local_wakeup_peak_abs(chunk, pcm_len);
-        if (peak >= threshold) {
-            active_ms += chunk_ms;
-        } else {
-            if (active_ms > chunk_ms) {
-                active_ms -= chunk_ms;
-            } else {
-                active_ms = 0;
-            }
+        if (pcm_len != chunk_bytes) {
+            ESP_LOGW(TAG, "WakeNet: short audio frame %d/%d", pcm_len, chunk_bytes);
+            continue;
         }
 
-        if (active_ms < sustain_ms) {
+        if (afe_handle->feed(afe_data, (const int16_t *)chunk) < 0) {
+            ESP_LOGW(TAG, "WakeNet: AFE feed failed");
+            continue;
+        }
+
+        afe_fetch_result_t *result = afe_handle->fetch_with_delay(afe_data, pdMS_TO_TICKS(100));
+        if (result == NULL || result->ret_value < 0 ||
+            result->wakeup_state != WAKENET_DETECTED) {
             continue;
         }
 
         TickType_t now = xTaskGetTickCount();
         if ((now - s_runtime.local_wakeup_last_trigger_tick) < cooldown_ticks) {
-            active_ms = 0;
             continue;
         }
 
         s_runtime.local_wakeup_last_trigger_tick = now;
-        active_ms = 0;
 
         (void)audio_stream_stop_capture();
         capture_started = false;
+        afe_handle->reset_buffer(afe_data);
 
         if (!network_is_connected() ||
             s_runtime.ai_service == NULL ||
@@ -496,7 +534,13 @@ static void app_local_wakeup_task(void *arg)
 
         if (!s_runtime.voice_round_req && !s_runtime.is_processing) {
             s_runtime.voice_round_req = true;
-            ESP_LOGI(TAG, "Local offline wakeup triggered");
+            ESP_LOGI(TAG, "WakeNet detected 你好小智 (word=%d model=%d channel=%d)",
+                     result->wake_word_index,
+                     result->wakenet_model_index,
+                     result->trigger_channel_id);
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("Wake word detected");
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -521,26 +565,6 @@ static esp_err_t app_runtime_process_chat_text(const char *text)
     app_config_t *app_config = config_get();
     (void)audio_set_volume(app_config->volume);
     return ESP_OK;
-}
-
-static const char *app_chat_provider_name(ai_provider_config_t provider)
-{
-    switch (provider) {
-        case AI_PROVIDER_CONFIG_OPENAI:
-            return "OpenAI";
-        case AI_PROVIDER_CONFIG_ZHIPU:
-            return "Zhipu AI";
-        case AI_PROVIDER_CONFIG_DEEPSEEK:
-            return "DeepSeek";
-        case AI_PROVIDER_CONFIG_KIMI:
-            return "Kimi";
-        case AI_PROVIDER_CONFIG_MINIMAX:
-            return "MiniMax";
-        case AI_PROVIDER_CONFIG_OPENROUTER:
-            return "OpenRouter";
-        default:
-            return "Unknown";
-    }
 }
 
 static void app_mask_api_key(const char *api_key, char *masked, size_t masked_size)
@@ -587,7 +611,7 @@ static void app_runtime_log_chat_config(const app_config_t *config)
 
     ESP_LOGI(TAG,
              "Chat cfg: provider=%s model=%s base_url=%s api_key=%s",
-             app_chat_provider_name(config->provider),
+             provider_catalog_display_name(config->provider),
              (config->model_name[0] != '\0') ? config->model_name : "<empty>",
              (config->base_url[0] != '\0') ? config->base_url : "<empty>",
              masked_key);
@@ -1355,10 +1379,41 @@ static void app_handle_debug_play_request(void)
     ESP_LOGI(TAG, "Handling debug playback request");
 
     if (s_runtime.recorded_audio == NULL || s_runtime.recorded_len <= 0) {
-        ESP_LOGW(TAG, "Debug playback: no recorded sample available");
+        ESP_LOGI(TAG, "Debug playback: no sample, running embedded TTS probe");
         if (s_runtime.ui_ready) {
-            (void)ui_debug_set_playing_state(false);
-            (void)ui_debug_update_status("No sample. Press Record first.");
+            (void)ui_debug_set_playing_state(true);
+            (void)ui_debug_update_status("TTS probe: synthesizing...");
+        }
+        app_config_t *cfg = config_get();
+        uint8_t *tts_audio = NULL;
+        int tts_len = 0;
+        esp_err_t tts_err = voice_gateway_tts_synthesize(
+            s_runtime.voice_gateway_client, "debug_tts_probe",
+            "你好，我是小智。", cfg != NULL ? cfg->tts_voice_name : NULL,
+            &tts_audio, &tts_len);
+        if (tts_err != ESP_OK) {
+            ESP_LOGE(TAG, "Debug TTS probe failed: %s", esp_err_to_name(tts_err));
+            free(tts_audio);
+            if (s_runtime.ui_ready) {
+                (void)ui_debug_set_playing_state(false);
+                (void)ui_debug_update_status("TTS probe failed; check serial");
+            }
+            return;
+        }
+        ESP_LOGI(TAG, "Debug TTS probe received %d PCM bytes", tts_len);
+        esp_err_t play_err = audio_debug_play_owned_sample(&tts_audio, &tts_len);
+        if (play_err != ESP_OK) {
+            ESP_LOGE(TAG, "Debug TTS probe playback failed: %s", esp_err_to_name(play_err));
+            free(tts_audio);
+            if (s_runtime.ui_ready) {
+                (void)ui_debug_set_playing_state(false);
+                (void)ui_debug_update_status("TTS audio queue failed");
+            }
+        } else {
+            s_runtime.debug_playback_busy = true;
+            if (s_runtime.ui_ready) {
+                (void)ui_debug_update_status("Playing TTS probe...");
+            }
         }
         return;
     }
@@ -1487,7 +1542,7 @@ static const char *app_voice_provider_name(voice_provider_config_t provider)
 static esp_err_t app_runtime_initialize_ai_service(void)
 {
     app_config_t *config = config_get();
-    const char *provider_name = app_chat_provider_name(config->provider);
+    const char *provider_name = provider_catalog_display_name(config->provider);
 
     app_runtime_log_chat_config(config);
 
@@ -1529,6 +1584,7 @@ static esp_err_t app_runtime_initialize_ai_service(void)
 static esp_err_t app_runtime_initialize_voice_gateway_client(void)
 {
     app_config_t *cfg = config_get();
+    const bool embedded = CONFIG_VOICE_GATEWAY_MODE_EMBEDDED;
 
     if (s_runtime.voice_gateway_client != NULL) {
         voice_gateway_client_destroy(s_runtime.voice_gateway_client);
@@ -1540,15 +1596,30 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
         return ESP_OK;
     }
 
-    if (cfg->voice_gateway_url[0] == '\0') {
+    if (embedded && CONFIG_VOICE_DASHSCOPE_API_KEY[0] == '\0') {
+        ESP_LOGW(TAG, "Embedded voice gateway requires VOICE_DASHSCOPE_API_KEY");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Configure DashScope voice key");
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!embedded && cfg->voice_gateway_url[0] == '\0') {
         ESP_LOGW(TAG, "Voice gateway enabled but URL is empty");
         return ESP_ERR_INVALID_STATE;
     }
 
     voice_gateway_client_cfg_t gw_cfg = {
+        .embedded = embedded,
         .base_url = cfg->voice_gateway_url,
         .access_token = cfg->voice_gateway_token,
-        .timeout_ms = cfg->stt_timeout_ms,
+        .timeout_ms = (cfg->tts_timeout_ms > cfg->stt_timeout_ms)
+                          ? cfg->tts_timeout_ms
+                          : cfg->stt_timeout_ms,
+        .embedded_api_key = CONFIG_VOICE_DASHSCOPE_API_KEY,
+        .embedded_websocket_url = CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL,
+        .embedded_stt_model = CONFIG_VOICE_DASHSCOPE_STT_MODEL,
+        .embedded_tts_model = CONFIG_VOICE_DASHSCOPE_TTS_MODEL,
+        .embedded_tts_voice = CONFIG_VOICE_DASHSCOPE_TTS_VOICE,
         .stt_provider = app_voice_provider_name(cfg->stt_provider),
         .stt_model_name = cfg->stt_model_name,
         .stt_api_key = cfg->stt_api_key,
@@ -1577,7 +1648,9 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Voice gateway client initialised: %s", cfg->voice_gateway_url);
+    ESP_LOGI(TAG, "Voice gateway client initialised: mode=%s endpoint=%s",
+             embedded ? "embedded" : "external",
+             embedded ? CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL : cfg->voice_gateway_url);
     return ESP_OK;
 }
 
@@ -1685,14 +1758,14 @@ esp_err_t app_runtime_switch_chat_provider(ai_provider_config_t provider)
 
     ai_provider_config_t old_provider = cfg->provider;
     if (provider == old_provider) {
-        ESP_LOGI(TAG, "Chat provider unchanged: %s", app_chat_provider_name(provider));
+        ESP_LOGI(TAG, "Chat provider unchanged: %s", provider_catalog_display_name(provider));
         return ESP_OK;
     }
 
     ESP_LOGI(TAG,
              "Switching chat provider: %s -> %s",
-             app_chat_provider_name(old_provider),
-             app_chat_provider_name(provider));
+             provider_catalog_display_name(old_provider),
+             provider_catalog_display_name(provider));
 
     esp_err_t err = config_set_ai_provider(provider);
     if (err != ESP_OK) {
@@ -1702,13 +1775,13 @@ esp_err_t app_runtime_switch_chat_provider(ai_provider_config_t provider)
 
     err = app_runtime_initialize_ai_service();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Chat provider switched to %s", app_chat_provider_name(provider));
+        ESP_LOGI(TAG, "Chat provider switched to %s", provider_catalog_display_name(provider));
         return ESP_OK;
     }
 
     ESP_LOGE(TAG,
              "Provider %s init failed (%s), rolling back",
-             app_chat_provider_name(provider),
+             provider_catalog_display_name(provider),
              esp_err_to_name(err));
 
     esp_err_t rollback_cfg_err = config_set_ai_provider(old_provider);

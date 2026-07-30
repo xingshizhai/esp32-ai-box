@@ -27,6 +27,7 @@ idf_component_register(
         cjson
         espressif__esp-box-3
         espressif__esp_lvgl_port
+        espressif__esp-sr
 )
 
 add_compile_options(-fdiagnostics-color=always)

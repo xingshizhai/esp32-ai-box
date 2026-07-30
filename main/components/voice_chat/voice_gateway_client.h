@@ -9,9 +9,17 @@ extern "C" {
 #endif
 
 typedef struct {
+    bool embedded;
     const char *base_url;
     const char *access_token;
     int timeout_ms;
+
+    /* On-device gateway: ESP32 connects directly to DashScope. */
+    const char *embedded_api_key;
+    const char *embedded_websocket_url;
+    const char *embedded_stt_model;
+    const char *embedded_tts_model;
+    const char *embedded_tts_voice;
 
     /* Optional STT profile passed through to voice gateway. */
     const char *stt_provider;

@@ -11,3 +11,5 @@ dependencies:
   espressif/esp_lcd_ili9341: '*'
   espressif/esp_lcd_touch_gt911: '*'
   espressif/esp_lcd_touch_tt21100: '*'
+  espressif/esp-sr: '*'
+  espressif/esp_websocket_client: '^1.8.0'

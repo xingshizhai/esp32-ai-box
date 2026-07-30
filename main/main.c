@@ -9,6 +9,7 @@
 #include "app_display.h"
 #include "app_runtime.h"
 #include "config.h"
+#include "provider_catalog.h"
 #include "network.h"
 #include "ui.h"
 #include "audio.h"
@@ -64,98 +65,6 @@ static bool app_str_ieq(const char *a, const char *b)
     }
 
     return (*a == '\0' && *b == '\0');
-}
-
-static const char *app_provider_name(ai_provider_config_t provider)
-{
-    switch (provider) {
-        case AI_PROVIDER_CONFIG_OPENAI:
-            return "openai";
-        case AI_PROVIDER_CONFIG_ZHIPU:
-            return "zhipu";
-        case AI_PROVIDER_CONFIG_DEEPSEEK:
-            return "deepseek";
-        case AI_PROVIDER_CONFIG_KIMI:
-            return "kimi";
-        case AI_PROVIDER_CONFIG_MINIMAX:
-            return "minimax";
-        case AI_PROVIDER_CONFIG_OPENROUTER:
-            return "openrouter";
-        default:
-            return "unknown";
-    }
-}
-
-static bool app_parse_provider(const char *token, ai_provider_config_t *provider)
-{
-    if (token == NULL || provider == NULL) {
-        return false;
-    }
-
-    if (app_str_ieq(token, "openai")) {
-        *provider = AI_PROVIDER_CONFIG_OPENAI;
-        return true;
-    }
-    if (app_str_ieq(token, "zhipu") || app_str_ieq(token, "glm")) {
-        *provider = AI_PROVIDER_CONFIG_ZHIPU;
-        return true;
-    }
-    if (app_str_ieq(token, "deepseek")) {
-        *provider = AI_PROVIDER_CONFIG_DEEPSEEK;
-        return true;
-    }
-    if (app_str_ieq(token, "kimi") || app_str_ieq(token, "moonshot")) {
-        *provider = AI_PROVIDER_CONFIG_KIMI;
-        return true;
-    }
-    if (app_str_ieq(token, "minimax")) {
-        *provider = AI_PROVIDER_CONFIG_MINIMAX;
-        return true;
-    }
-    if (app_str_ieq(token, "openrouter")) {
-        *provider = AI_PROVIDER_CONFIG_OPENROUTER;
-        return true;
-    }
-
-    return false;
-}
-
-static bool app_provider_default_profile(ai_provider_config_t provider,
-                                         const char **base_url,
-                                         const char **model_name)
-{
-    if (base_url == NULL || model_name == NULL) {
-        return false;
-    }
-
-    switch (provider) {
-        case AI_PROVIDER_CONFIG_OPENAI:
-            *base_url = "https://api.openai.com/v1/chat/completions";
-            *model_name = "gpt-4o-mini";
-            return true;
-        case AI_PROVIDER_CONFIG_ZHIPU:
-            *base_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-            *model_name = "glm-4-flash";
-            return true;
-        case AI_PROVIDER_CONFIG_DEEPSEEK:
-            *base_url = "https://api.deepseek.com/v1/chat/completions";
-            *model_name = "deepseek-v4-flash";
-            return true;
-        case AI_PROVIDER_CONFIG_KIMI:
-            *base_url = "https://api.moonshot.cn/v1/chat/completions";
-            *model_name = "moonshot-v1-8k";
-            return true;
-        case AI_PROVIDER_CONFIG_MINIMAX:
-            *base_url = "https://api.minimax.chat/v1/chat/completions";
-            *model_name = "MiniMax-Text-01";
-            return true;
-        case AI_PROVIDER_CONFIG_OPENROUTER:
-            *base_url = "https://openrouter.ai/api/v1/chat/completions";
-            *model_name = "deepseek/deepseek-chat-v3-0324:free";
-            return true;
-        default:
-            return false;
-    }
 }
 
 static void app_console_print_help(void)
@@ -241,7 +150,7 @@ static void app_console_handle_line(char *line)
         app_config_t *cfg = config_get();
         ESP_LOGI(TAG,
                  "Current provider=%s model=%s base_url=%s key=%s",
-                 app_provider_name(cfg->provider),
+                 provider_catalog_name(cfg->provider),
                  cfg->model_name,
                  cfg->base_url,
                  (cfg->api_key[0] != '\0') ? "set" : "empty");
@@ -267,14 +176,14 @@ static void app_console_handle_line(char *line)
         }
 
         ai_provider_config_t provider;
-        if (!app_parse_provider(name, &provider)) {
+        if (!provider_catalog_parse(name, &provider)) {
             ESP_LOGW(TAG, "Unknown provider: %s", name);
             return;
         }
 
         esp_err_t err = app_runtime_switch_chat_provider(provider);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Provider switched to %s", app_provider_name(provider));
+            ESP_LOGI(TAG, "Provider switched to %s", provider_catalog_name(provider));
         } else {
             ESP_LOGE(TAG,
                      "Provider switch failed: %s",
@@ -291,14 +200,14 @@ static void app_console_handle_line(char *line)
         }
 
         ai_provider_config_t provider;
-        if (!app_parse_provider(name, &provider)) {
+        if (!provider_catalog_parse(name, &provider)) {
             ESP_LOGW(TAG, "Unknown provider: %s", name);
             return;
         }
 
         const char *default_base = NULL;
         const char *default_model = NULL;
-        if (!app_provider_default_profile(provider, &default_base, &default_model)) {
+        if (!provider_catalog_default_profile(provider, &default_base, &default_model)) {
             ESP_LOGW(TAG, "No default profile for provider: %s", name);
             return;
         }
@@ -316,7 +225,7 @@ static void app_console_handle_line(char *line)
         if (err == ESP_OK) {
             ESP_LOGI(TAG,
                      "Preset applied: provider=%s base=%s model=%s",
-                     app_provider_name(provider),
+                     provider_catalog_name(provider),
                      default_base,
                      default_model);
         } else {
@@ -473,13 +382,12 @@ void app_main(void)
         (void)ui_debug_set_test_audio_action_callback(app_runtime_request_debug_test_audio);
 #endif
     }
-    /* If the codec I2C port matches the touch I2C port (port 0), share the
-     * bus handle so audio_init() does not try to create a duplicate. */
-#if CONFIG_AUDIO_CODEC_I2C_PORT == 0
+    /* BOX-3 routes touch and audio codecs through the BSP-owned I2C bus.
+     * Always reuse that handle: creating another master on the same port is
+     * rejected by the ESP-IDF I2C driver. */
     if (app_display_get_shared_i2c_bus() != NULL) {
         audio_set_codec_i2c_bus(app_display_get_shared_i2c_bus());
     }
-#endif
     err = audio_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Audio initialization failed: %s, continuing in degraded mode", esp_err_to_name(err));

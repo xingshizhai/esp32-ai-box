@@ -89,10 +89,12 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ```ini
 AI_PROVIDER: DeepSeek
 BASE_URL: https://api.deepseek.com/v1/chat/completions
-MODEL: deepseek-v4-flash
+MODEL: deepseek-chat
 ```
 
 ### 语音唤醒（可选）
+
+触发词更换和模型选择的完整说明见 [ESP32 触发关键词更换方案](docs/wake_word_change_plan.md)。当前设备端 WakeNet 默认使用 `你好小智` 模型；仅修改显示字符串不会改变声学模型。
 
 可在 `menuconfig -> Ai-Box Configuration -> Voice Configuration -> Voice Runtime` 配置：
 
@@ -143,7 +145,7 @@ ESP32 侧在 `menuconfig -> Voice Configuration -> Voice Gateway` 设置：
 本地离线唤醒说明：
 
 - 可在 `menuconfig -> Ai-Box Configuration -> Voice Configuration -> Voice Runtime` 开启 `ENABLE_LOCAL_OFFLINE_WAKEUP`。
-- 该模式下，设备端会持续采集麦克风并做本地能量检测，不依赖网络进行唤醒判断。
+- 该模式下，设备端会持续采集麦克风并运行 ESP-SR WakeNet 模型，不依赖网络进行唤醒判断；当前默认模型为“你好小智”。
 - 调参项：
    - `LOCAL_WAKEUP_PEAK_THRESHOLD`：触发阈值（越大越不敏感）
    - `LOCAL_WAKEUP_SUSTAIN_MS`：持续时长（越大越不易误触）
