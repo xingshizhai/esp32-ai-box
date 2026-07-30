@@ -57,12 +57,27 @@ esp_err_t conversation_add_message(conversation_manager_t *conv, const char *rol
     }
 
     if (conv->message_count > conv->max_history) {
-        ai_message_t *old_msg = conv->messages;
-        conv->messages = conv->messages->next;
-        old_msg->next = NULL;
-        ai_message_destroy(old_msg);
-        conv->message_count--;
-        ESP_LOGD(TAG, "Removed oldest message to maintain history limit");
+        /* Keep a leading "system" message pinned: evict the oldest message
+         * after it instead, so the voice-style prompt survives long
+         * sessions instead of aging out of the FIFO like a normal turn. */
+        ai_message_t *victim_prev = NULL;
+        ai_message_t *victim = conv->messages;
+        if (victim != NULL && victim->role != NULL && strcmp(victim->role, "system") == 0) {
+            victim_prev = victim;
+            victim = victim->next;
+        }
+
+        if (victim != NULL) {
+            if (victim_prev != NULL) {
+                victim_prev->next = victim->next;
+            } else {
+                conv->messages = victim->next;
+            }
+            victim->next = NULL;
+            ai_message_destroy(victim);
+            conv->message_count--;
+            ESP_LOGD(TAG, "Removed oldest non-system message to maintain history limit");
+        }
     }
 
     ESP_LOGD(TAG, "Added message: role=%s, count=%d", role, conv->message_count);

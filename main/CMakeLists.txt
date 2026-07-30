@@ -5,6 +5,7 @@ idf_component_register(
          "app_display.c"
          "app_runtime.c"
     INCLUDE_DIRS "."
+    EMBED_FILES "assets/wake_ack.pcm"
     REQUIRES 
         ai_service
         conversation

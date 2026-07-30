@@ -9,6 +9,7 @@
 #include "driver/sdmmc_host.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "soc/soc_caps.h"
@@ -18,6 +19,12 @@ static const char *TAG = "storage";
 #define STORAGE_SD_MOUNT_POINT      "/sdcard"
 #define STORAGE_MAX_FILES           (8)
 #define STORAGE_ALLOC_UNIT          (16 * 1024)
+
+#define STORAGE_SPIFFS_MOUNT_POINT  "/spiffs"
+#define STORAGE_SPIFFS_PARTITION    "storage"
+#define STORAGE_SPIFFS_MAX_FILES    (4)
+
+static bool s_spiffs_mounted = false;
 
 /*
  * SPI-mode-like SDMMC using different GPIO pins to avoid conflicts
@@ -74,6 +81,45 @@ static esp_err_t storage_find_first_mp3_in_dir(const char *dir_path, char *out_p
 
     closedir(dir);
     return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t storage_spiffs_mount(void)
+{
+    if (s_spiffs_mounted) {
+        return ESP_OK;
+    }
+
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = STORAGE_SPIFFS_MOUNT_POINT,
+        .partition_label = STORAGE_SPIFFS_PARTITION,
+        .max_files = STORAGE_SPIFFS_MAX_FILES,
+        .format_if_mount_failed = false,
+    };
+
+    esp_err_t err = esp_vfs_spiffs_register(&conf);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SPIFFS mount failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    size_t total = 0;
+    size_t used = 0;
+    esp_spiffs_info(STORAGE_SPIFFS_PARTITION, &total, &used);
+    ESP_LOGI(TAG, "SPIFFS mounted at %s: %u/%u bytes used", STORAGE_SPIFFS_MOUNT_POINT,
+             (unsigned)used, (unsigned)total);
+
+    s_spiffs_mounted = true;
+    return ESP_OK;
+}
+
+bool storage_spiffs_is_mounted(void)
+{
+    return s_spiffs_mounted;
+}
+
+const char *storage_spiffs_get_mount_point(void)
+{
+    return STORAGE_SPIFFS_MOUNT_POINT;
 }
 
 bool storage_sdcard_is_mounted(void)

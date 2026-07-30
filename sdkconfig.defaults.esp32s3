@@ -70,3 +70,11 @@ CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP=y
 CONFIG_LOCAL_WAKEUP_COOLDOWN_MS=2500
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+
+# Full-coverage CJK chat font lives on the "storage" SPIFFS partition (too
+# large for the 2MB app partition) and is loaded at runtime via LVGL's
+# POSIX FS driver + binfont loader. See main/components/ui/ui.c.
+CONFIG_LV_USE_FS_POSIX=y
+CONFIG_LV_FS_POSIX_LETTER=83
+CONFIG_LV_FS_POSIX_PATH="/spiffs"
+CONFIG_LV_FS_POSIX_CACHE_SIZE=0

@@ -1,2 +1,12 @@
+# gateway.py (local voice gateway server)
 flask>=3.0
+
+# dashscope_speech.py -- used by gateway.py, test_asr_tts.py, and
+# pc_loop_test.py for DashScope ASR/TTS over WebSocket
 websocket-client>=1.6
+
+# pc_loop_test.py shells out to tools/screenshot/screenshot.py for periodic
+# device screenshots (--device-ip); that script needs these to decode the
+# raw RGB565 framebuffer into a PNG
+numpy>=1.26
+Pillow>=10.0

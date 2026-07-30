@@ -4,4 +4,5 @@ idf_component_register(
     REQUIRES
         fatfs
         esp_driver_sdmmc
+        spiffs
 )

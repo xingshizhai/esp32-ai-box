@@ -31,6 +31,10 @@
 
 static const char *TAG = "app_runtime";
 
+/* "我在" wake-word ack, 16 kHz mono PCM s16le, embedded via main/CMakeLists.txt EMBED_FILES. */
+extern const uint8_t wake_ack_pcm_start[] asm("_binary_wake_ack_pcm_start");
+extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
+
 typedef struct {
     ai_service_t *ai_service;
     voice_gateway_client_t *voice_gateway_client;
@@ -62,7 +66,11 @@ typedef struct {
 
 static app_runtime_state_t s_runtime = {0};
 
-#define VOICE_CAPTURE_MS             (3500)
+/* Fixed-duration capture window (no VAD/silence-based early stop exists yet
+ * -- CONFIG_VAD_SILENCE_MS is reserved but unused). 3500ms was tuned for
+ * short smart-speaker commands and truncates ordinary sentences; widened to
+ * give natural speech room without dragging out short commands too much. */
+#define VOICE_CAPTURE_MS             (7000)
 #define VOICE_STT_TEXT_MAX           (1024)
 #define VOICE_SESSION_ID_MAX         (64)
 #define PCM_S16LE_BYTES_PER_SAMPLE   (2)
@@ -533,7 +541,6 @@ static void app_local_wakeup_task(void *arg)
         }
 
         if (!s_runtime.voice_round_req && !s_runtime.is_processing) {
-            s_runtime.voice_round_req = true;
             ESP_LOGI(TAG, "WakeNet detected 你好小智 (word=%d model=%d channel=%d)",
                      result->wake_word_index,
                      result->wakenet_model_index,
@@ -541,6 +548,22 @@ static void app_local_wakeup_task(void *arg)
             if (s_runtime.ui_ready) {
                 (void)ui_update_status("Wake word detected");
             }
+
+            /* Play "我在" and wait for it to finish before LISTENING starts.
+             * There is no AEC on this board: starting capture in parallel
+             * with the ack (tried earlier) made the device hear its own
+             * "我在" over the mic and process THAT as the user's command,
+             * ignoring whatever the user actually said next. The product
+             * now expects a two-step interaction (wake phrase alone, wait
+             * for "我在", then the command), so it's fine for capture to
+             * start only once the ack has fully played out. */
+            int wake_ack_len = (int)(wake_ack_pcm_end - wake_ack_pcm_start);
+            if (audio_play_tts(wake_ack_pcm_start, wake_ack_len) == ESP_OK) {
+                int wake_ack_ms = (wake_ack_len / 2) * 1000 / 16000;
+                vTaskDelay(pdMS_TO_TICKS(wake_ack_ms + 150));
+            }
+
+            s_runtime.voice_round_req = true;
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1043,8 +1066,14 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
         }
 
         if (s_runtime.ui_ready) {
-            (void)ui_update_chat_message(user_text, response.content);
-            (void)ui_show_panel(UI_PANEL_CHAT);
+            /* Chat text panel shows raw AI text and needs full CJK glyph
+             * coverage the device doesn't reliably have right now (tofu
+             * boxes -- see ui_load_cjk_font()). Stay on the main pet panel
+             * and convey state through its mood/expression instead; the
+             * debug panel's chat view (still text-based, opt-in only) is
+             * unaffected. */
+            (void)ui_update_status("Speaking...");
+            (void)ui_show_panel(UI_PANEL_MAIN);
         }
     } else {
         ESP_LOGE(TAG, "AI request failed: %s", response.error_msg);
@@ -1674,6 +1703,16 @@ esp_err_t app_runtime_init(bool ui_ready)
     if (err != ESP_OK) {
         return err;
     }
+
+    /* This is a spoken, real-time conversation, not a text chat window --
+     * keep replies short so TTS playback doesn't run for tens of seconds. */
+    static const char *kVoiceSystemPrompt =
+        "你是一个通过语音交流的智能助手，正在进行实时语音对话，"
+        "而不是文字聊天。回复必须简短、口语化，像日常说话一样，"
+        "通常一到两句话、40字以内说清楚，除非用户明确要求更详细的说明。"
+        "不要使用markdown、项目符号、加粗星号等排版，因为你的回复会被"
+        "转换成语音直接朗读出来。";
+    (void)conversation_add_message(&s_runtime.conversation, "system", kVoiceSystemPrompt);
 
     err = app_runtime_initialize_ai_service();
     if (err != ESP_OK) {
