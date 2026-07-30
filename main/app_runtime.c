@@ -2054,6 +2054,13 @@ void app_runtime_handle_audio_playback_complete(void)
         (void)voice_session_handle_event(&s_runtime.voice_session,
                                          VOICE_EVENT_TTS_END,
                                          "audio playback completed");
+        /* Nothing reset the main-panel status text after a voice round
+         * finished speaking, so it stayed on "Voice: speaking..." at idle
+         * indefinitely (until the next round overwrote it) -- misleading
+         * on the standby screen. */
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("Say: 你好小智");
+        }
     }
 
     if (s_runtime.debug_playback_busy) {
