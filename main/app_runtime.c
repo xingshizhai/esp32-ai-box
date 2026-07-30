@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
@@ -28,12 +29,19 @@
 #if CONFIG_SDCARD_ENABLED
 #include "storage.h"
 #endif
+#include "bsp/display.h"
 
 static const char *TAG = "app_runtime";
 
 /* "我在" wake-word ack, 16 kHz mono PCM s16le, embedded via main/CMakeLists.txt EMBED_FILES. */
 extern const uint8_t wake_ack_pcm_start[] asm("_binary_wake_ack_pcm_start");
 extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
+
+/* Screen power saving: dim after CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP-gated
+ * idle time, wake back to full brightness on the next WakeNet trigger. */
+#define SCREEN_DIM_TIMEOUT_MS         (30000)
+#define SCREEN_DIM_BRIGHTNESS_PERCENT (15)
+#define SCREEN_FULL_BRIGHTNESS_PERCENT (100)
 
 typedef struct {
     ai_service_t *ai_service;
@@ -56,6 +64,8 @@ typedef struct {
     TaskHandle_t local_wakeup_task;
     TickType_t local_wakeup_last_trigger_tick;
 #endif
+    TickType_t last_activity_tick;
+    bool screen_dimmed;
     bool wakeup_armed;
     TickType_t wakeup_armed_tick;
 #if CONFIG_SDCARD_ENABLED
@@ -396,7 +406,34 @@ static bool app_wakeup_window_expired(void)
 }
 #endif
 
+static void app_runtime_mark_activity(void)
+{
+    s_runtime.last_activity_tick = xTaskGetTickCount();
+    if (s_runtime.screen_dimmed) {
+        (void)bsp_display_brightness_set(SCREEN_FULL_BRIGHTNESS_PERCENT);
+        s_runtime.screen_dimmed = false;
+        ESP_LOGI(TAG, "Screen: restored to full brightness");
+    }
+}
+
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
+static void app_runtime_check_screen_dim(void)
+{
+    if (s_runtime.screen_dimmed || s_runtime.is_processing || s_runtime.voice_round_req) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    uint32_t idle_ms = (uint32_t)pdTICKS_TO_MS(now - s_runtime.last_activity_tick);
+    if (idle_ms < SCREEN_DIM_TIMEOUT_MS) {
+        return;
+    }
+
+    (void)bsp_display_brightness_set(SCREEN_DIM_BRIGHTNESS_PERCENT);
+    s_runtime.screen_dimmed = true;
+    ESP_LOGI(TAG, "Screen: dimmed to %d%% after %" PRIu32 "ms idle", SCREEN_DIM_BRIGHTNESS_PERCENT, idle_ms);
+}
+
 static bool app_local_wakeup_should_pause(void)
 {
     return s_runtime.is_processing ||
@@ -477,6 +514,8 @@ static void app_local_wakeup_task(void *arg)
     }
 
     while (true) {
+        app_runtime_check_screen_dim();
+
         if (app_local_wakeup_should_pause()) {
             if (capture_started) {
                 (void)audio_stream_stop_capture();
@@ -527,6 +566,7 @@ static void app_local_wakeup_task(void *arg)
         }
 
         s_runtime.local_wakeup_last_trigger_tick = now;
+        app_runtime_mark_activity();
 
         (void)audio_stream_stop_capture();
         capture_started = false;
@@ -1692,6 +1732,8 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
 esp_err_t app_runtime_init(bool ui_ready)
 {
     s_runtime.ui_ready = ui_ready;
+    s_runtime.last_activity_tick = xTaskGetTickCount();
+    s_runtime.screen_dimmed = false;
 
     esp_err_t err = voice_session_init(&s_runtime.voice_session, true);
     if (err != ESP_OK) {
@@ -1887,6 +1929,7 @@ esp_err_t app_runtime_test_chat(const char *prompt)
 
 void app_runtime_request_voice_round(void)
 {
+    app_runtime_mark_activity();
     s_runtime.voice_round_req = true;
 }
 
@@ -2005,6 +2048,7 @@ void app_runtime_handle_stt_result(const char *text)
 void app_runtime_handle_audio_playback_complete(void)
 {
     ESP_LOGI(TAG, "Audio playback completed");
+    s_runtime.last_activity_tick = xTaskGetTickCount();
 
     if (voice_session_get_state(&s_runtime.voice_session) == VOICE_STATE_SPEAKING) {
         (void)voice_session_handle_event(&s_runtime.voice_session,
