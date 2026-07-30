@@ -382,18 +382,24 @@ void app_main(void)
         (void)ui_debug_set_test_audio_action_callback(app_runtime_request_debug_test_audio);
 #endif
     }
-    /* BOX-3 routes touch and audio codecs through the BSP-owned I2C bus.
-     * Always reuse that handle: creating another master on the same port is
-     * rejected by the ESP-IDF I2C driver. */
+    /* Some boards route touch and audio codecs through a BSP-owned I2C bus.
+     * Always reuse that handle when present: creating another master on the
+     * same port is rejected by the ESP-IDF I2C driver. */
     if (app_display_get_shared_i2c_bus() != NULL) {
         audio_set_codec_i2c_bus(app_display_get_shared_i2c_bus());
     }
     err = audio_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Audio initialization failed: %s, continuing in degraded mode", esp_err_to_name(err));
-    } else if (ui_ready) {
-        app_config_t *app_config = config_get();
-        (void)ui_debug_set_play_volume(app_config->volume);
+    } else {
+        /* No-op on boards whose PA enable is a raw GPIO already driven by
+         * audio_init() itself (e.g. BOX-3); needed on boards where the PA is
+         * behind an I2C IO-expander (e.g. LCD-EV-BOARD-2). */
+        (void)app_display_enable_speaker_amp(true);
+        if (ui_ready) {
+            app_config_t *app_config = config_get();
+            (void)ui_debug_set_play_volume(app_config->volume);
+        }
     }
     ESP_ERROR_CHECK(network_init());
 

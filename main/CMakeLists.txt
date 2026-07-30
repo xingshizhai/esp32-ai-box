@@ -2,11 +2,10 @@ cmake_minimum_required(VERSION 3.5)
 
 idf_component_register(
     SRCS "main.c"
-         "app_display.c"
          "app_runtime.c"
     INCLUDE_DIRS "."
     EMBED_FILES "assets/wake_ack.pcm"
-    REQUIRES 
+    REQUIRES
         ai_service
         conversation
         config
@@ -17,6 +16,7 @@ idf_component_register(
         audio
         voice_chat
         storage
+        board_iface
         esp_psram
         esp_adc
         esp_lcd
@@ -26,8 +26,6 @@ idf_component_register(
         esp_driver_uart
         esp_http_client
         cjson
-        espressif__esp-box-3
-        espressif__esp_lvgl_port
         espressif__esp-sr
 )
 

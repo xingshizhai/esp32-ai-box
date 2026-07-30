@@ -101,3 +101,16 @@ void *app_display_get_shared_i2c_bus(void)
 {
     return (void *)bsp_i2c_get_handle();
 }
+
+esp_err_t app_display_set_brightness(int percent)
+{
+    return bsp_display_brightness_set(percent);
+}
+
+esp_err_t app_display_enable_speaker_amp(bool enable)
+{
+    /* BOX-3's PA enable is a raw GPIO, already driven directly by the audio
+     * component (CONFIG_AUDIO_PA_GPIO) — nothing to do here. */
+    (void)enable;
+    return ESP_OK;
+}

@@ -1,0 +1,9 @@
+dependencies:
+  idf:
+    version: '>=5.2.0'
+  # Official ESP32-S3-BOX-3 BSP
+  espressif/esp-box-3: '*'
+  espressif/esp_lcd_ili9341: '*'
+  espressif/esp_lcd_touch_gt911: '*'
+  espressif/esp_lcd_touch_tt21100: '*'
+  espressif/esp_lvgl_port: '*'

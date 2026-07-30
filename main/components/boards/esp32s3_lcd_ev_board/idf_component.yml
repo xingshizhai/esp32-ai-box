@@ -1,0 +1,7 @@
+dependencies:
+  idf:
+    version: '>=5.3.0'
+  # Official ESP32-S3-LCD-EV-BOARD-2 BSP
+  espressif/esp32_s3_lcd_ev_board:
+    version: "^4"
+  espressif/esp_lvgl_port: '*'

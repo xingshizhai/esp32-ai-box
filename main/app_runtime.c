@@ -29,7 +29,7 @@
 #if CONFIG_SDCARD_ENABLED
 #include "storage.h"
 #endif
-#include "bsp/display.h"
+#include "app_display.h"
 
 static const char *TAG = "app_runtime";
 
@@ -52,6 +52,13 @@ extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
  *     said before the window elapses, it silently closes and the device
  *     falls back to requiring the wake word again. */
 #define CONVERSATION_FOLLOWUP_MS (10000)
+/* No AEC on this board: the mic can still pick up the tail/room echo of
+ * the device's own TTS playback for a moment right after it "completes".
+ * Ignore VAD triggers for this long after the window opens, or that echo
+ * gets mistaken for the start of a follow-up utterance (observed on
+ * hardware: playback ended, window opened, VAD fired 190ms later on
+ * nothing said, STT came back with a single garbage character). */
+#define CONVERSATION_ECHO_GUARD_MS (900)
 
 typedef struct {
     ai_service_t *ai_service;
@@ -78,6 +85,7 @@ typedef struct {
     bool screen_dimmed;
     volatile bool conversation_mode_active;
     TickType_t conversation_deadline_tick;
+    TickType_t conversation_earliest_trigger_tick;
     bool wakeup_armed;
     TickType_t wakeup_armed_tick;
 #if CONFIG_SDCARD_ENABLED
@@ -422,7 +430,7 @@ static void app_runtime_mark_activity(void)
 {
     s_runtime.last_activity_tick = xTaskGetTickCount();
     if (s_runtime.screen_dimmed) {
-        (void)bsp_display_brightness_set(SCREEN_FULL_BRIGHTNESS_PERCENT);
+        (void)app_display_set_brightness(SCREEN_FULL_BRIGHTNESS_PERCENT);
         s_runtime.screen_dimmed = false;
         ESP_LOGI(TAG, "Screen: restored to full brightness");
     }
@@ -433,8 +441,10 @@ static void app_runtime_mark_activity(void)
  * word, as long as it starts within CONVERSATION_FOLLOWUP_MS. */
 static void app_runtime_open_conversation_window(void)
 {
+    TickType_t now = xTaskGetTickCount();
     s_runtime.conversation_mode_active = true;
-    s_runtime.conversation_deadline_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONVERSATION_FOLLOWUP_MS);
+    s_runtime.conversation_deadline_tick = now + pdMS_TO_TICKS(CONVERSATION_FOLLOWUP_MS);
+    s_runtime.conversation_earliest_trigger_tick = now + pdMS_TO_TICKS(CONVERSATION_ECHO_GUARD_MS);
     if (s_runtime.ui_ready) {
         (void)ui_update_status("Listening (no wake word needed)...");
     }
@@ -454,7 +464,7 @@ static void app_runtime_check_screen_dim(void)
         return;
     }
 
-    (void)bsp_display_brightness_set(SCREEN_DIM_BRIGHTNESS_PERCENT);
+    (void)app_display_set_brightness(SCREEN_DIM_BRIGHTNESS_PERCENT);
     s_runtime.screen_dimmed = true;
     ESP_LOGI(TAG, "Screen: dimmed to %d%% after %" PRIu32 "ms idle", SCREEN_DIM_BRIGHTNESS_PERCENT, idle_ms);
 }
@@ -604,7 +614,8 @@ static void app_local_wakeup_task(void *arg)
                     (void)ui_update_status("Say: 你好小智");
                 }
                 ESP_LOGI(TAG, "Conversation window closed (no follow-up speech), wake word required again");
-            } else if (result->vad_state == VAD_SPEECH) {
+            } else if (result->vad_state == VAD_SPEECH &&
+                       (int32_t)(now - s_runtime.conversation_earliest_trigger_tick) >= 0) {
                 followup_triggered = true;
             }
         }
