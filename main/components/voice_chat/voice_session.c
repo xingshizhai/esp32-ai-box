@@ -34,7 +34,16 @@ static bool voice_transition_allowed(voice_state_t state, voice_event_t event)
                    event == VOICE_EVENT_RESET ||
                    event == VOICE_EVENT_ERROR;
         case VOICE_STATE_THINKING:
+            /* Kept in sync with voice_next_state()'s THINKING case below,
+             * which treats LLM_READY and TTS_START as equivalent triggers
+             * for THINKING->SPEAKING. This table used to omit TTS_START;
+             * that was masked as long as app_runtime.c fired LLM_READY
+             * first on every round (so TTS_START always arrived once
+             * already in SPEAKING), but became a real bug -- the THINKING
+             * state got stuck forever -- once LLM_READY stopped being
+             * fired as a redundant double-transition. */
             return event == VOICE_EVENT_LLM_READY ||
+                   event == VOICE_EVENT_TTS_START ||
                    event == VOICE_EVENT_INTERRUPT ||
                    event == VOICE_EVENT_RESET ||
                    event == VOICE_EVENT_ERROR;

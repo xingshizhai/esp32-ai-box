@@ -1190,7 +1190,13 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
         goto fail;
     }
 
-    (void)voice_session_handle_event(&s_runtime.voice_session, VOICE_EVENT_LLM_READY, "chat ready");
+    /* Not firing VOICE_EVENT_LLM_READY here: THINKING->SPEAKING already
+     * happens below via VOICE_EVENT_TTS_START once synthesis is actually
+     * done. Firing both (as this used to) transitioned to SPEAKING early --
+     * while still synthesizing, before any audio existed -- and made the
+     * later TTS_START land on an already-SPEAKING state every single
+     * round, logged as "illegal transition: state=SPEAKING event=TTS_START".
+     * Harmless (the state was already correct) but 100% reproducible noise. */
 
     if (s_runtime.ui_ready) {
         (void)ui_update_status("Voice: synthesizing...");
