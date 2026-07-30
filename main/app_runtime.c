@@ -43,6 +43,16 @@ extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
 #define SCREEN_DIM_BRIGHTNESS_PERCENT (15)
 #define SCREEN_FULL_BRIGHTNESS_PERCENT (100)
 
+/* Two wake modes:
+ *   - "未触发" (untriggered): default. Only the "你好小智" WakeNet keyword
+ *     starts a round.
+ *   - "已唤醒" (awake/conversation): opened for CONVERSATION_FOLLOWUP_MS
+ *     after a round finishes speaking. While open, any VAD-detected speech
+ *     starts the next round directly (no wake word needed). If nothing is
+ *     said before the window elapses, it silently closes and the device
+ *     falls back to requiring the wake word again. */
+#define CONVERSATION_FOLLOWUP_MS (10000)
+
 typedef struct {
     ai_service_t *ai_service;
     voice_gateway_client_t *voice_gateway_client;
@@ -66,6 +76,8 @@ typedef struct {
 #endif
     TickType_t last_activity_tick;
     bool screen_dimmed;
+    volatile bool conversation_mode_active;
+    TickType_t conversation_deadline_tick;
     bool wakeup_armed;
     TickType_t wakeup_armed_tick;
 #if CONFIG_SDCARD_ENABLED
@@ -416,6 +428,19 @@ static void app_runtime_mark_activity(void)
     }
 }
 
+/* Called when a voice round finishes speaking: opens (or extends) the
+ * "already awake" follow-up window so the next turn doesn't need the wake
+ * word, as long as it starts within CONVERSATION_FOLLOWUP_MS. */
+static void app_runtime_open_conversation_window(void)
+{
+    s_runtime.conversation_mode_active = true;
+    s_runtime.conversation_deadline_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONVERSATION_FOLLOWUP_MS);
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("Listening (no wake word needed)...");
+    }
+    ESP_LOGI(TAG, "Conversation window open for %dms (no wake word needed)", CONVERSATION_FOLLOWUP_MS);
+}
+
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
 static void app_runtime_check_screen_dim(void)
 {
@@ -471,11 +496,20 @@ static void app_local_wakeup_task(void *arg)
         return;
     }
 
-    /* Wake-word-only pipeline: keep CPU/RAM use low and avoid cloud traffic. */
+    /* Wake-word pipeline, kept lean (no AEC/SE/NS/AGC) to hold CPU/RAM use
+     * down. VAD is on (WebRTC VAD, no extra model file) so a follow-up
+     * utterance can be detected without repeating the wake word while a
+     * conversation window is open -- see app_runtime_open_conversation_window(). */
     afe_cfg->aec_init = false;
     afe_cfg->se_init = false;
     afe_cfg->ns_init = false;
-    afe_cfg->vad_init = false;
+    afe_cfg->vad_init = true;
+    /* Higher mode = more restrictive about reporting speech (fewer false
+     * positives from background noise); VAD_MODE_2 errs toward not
+     * accidentally spending a cloud round on room noise during the
+     * follow-up window, at the cost of needing reasonably clear speech. */
+    afe_cfg->vad_mode = VAD_MODE_2;
+    afe_cfg->vad_model_name = NULL;
     afe_cfg->agc_init = false;
     afe_cfg->wakenet_init = true;
     afe_cfg->wakenet_model_name = model_name;
@@ -555,17 +589,38 @@ static void app_local_wakeup_task(void *arg)
         }
 
         afe_fetch_result_t *result = afe_handle->fetch_with_delay(afe_data, pdMS_TO_TICKS(100));
-        if (result == NULL || result->ret_value < 0 ||
-            result->wakeup_state != WAKENET_DETECTED) {
+        if (result == NULL || result->ret_value < 0) {
             continue;
         }
 
         TickType_t now = xTaskGetTickCount();
-        if ((now - s_runtime.local_wakeup_last_trigger_tick) < cooldown_ticks) {
+        bool wake_triggered = (result->wakeup_state == WAKENET_DETECTED);
+        bool followup_triggered = false;
+
+        if (!wake_triggered && s_runtime.conversation_mode_active) {
+            if ((int32_t)(now - s_runtime.conversation_deadline_tick) >= 0) {
+                s_runtime.conversation_mode_active = false;
+                if (s_runtime.ui_ready) {
+                    (void)ui_update_status("Say: 你好小智");
+                }
+                ESP_LOGI(TAG, "Conversation window closed (no follow-up speech), wake word required again");
+            } else if (result->vad_state == VAD_SPEECH) {
+                followup_triggered = true;
+            }
+        }
+
+        if (!wake_triggered && !followup_triggered) {
             continue;
         }
 
-        s_runtime.local_wakeup_last_trigger_tick = now;
+        if (wake_triggered && (now - s_runtime.local_wakeup_last_trigger_tick) < cooldown_ticks) {
+            continue;
+        }
+
+        if (wake_triggered) {
+            s_runtime.local_wakeup_last_trigger_tick = now;
+        }
+        s_runtime.conversation_mode_active = false;
         app_runtime_mark_activity();
 
         (void)audio_stream_stop_capture();
@@ -581,26 +636,37 @@ static void app_local_wakeup_task(void *arg)
         }
 
         if (!s_runtime.voice_round_req && !s_runtime.is_processing) {
-            ESP_LOGI(TAG, "WakeNet detected 你好小智 (word=%d model=%d channel=%d)",
-                     result->wake_word_index,
-                     result->wakenet_model_index,
-                     result->trigger_channel_id);
-            if (s_runtime.ui_ready) {
-                (void)ui_update_status("Wake word detected");
-            }
+            if (wake_triggered) {
+                ESP_LOGI(TAG, "WakeNet detected 你好小智 (word=%d model=%d channel=%d)",
+                         result->wake_word_index,
+                         result->wakenet_model_index,
+                         result->trigger_channel_id);
+                if (s_runtime.ui_ready) {
+                    (void)ui_update_status("Wake word detected");
+                }
 
-            /* Play "我在" and wait for it to finish before LISTENING starts.
-             * There is no AEC on this board: starting capture in parallel
-             * with the ack (tried earlier) made the device hear its own
-             * "我在" over the mic and process THAT as the user's command,
-             * ignoring whatever the user actually said next. The product
-             * now expects a two-step interaction (wake phrase alone, wait
-             * for "我在", then the command), so it's fine for capture to
-             * start only once the ack has fully played out. */
-            int wake_ack_len = (int)(wake_ack_pcm_end - wake_ack_pcm_start);
-            if (audio_play_tts(wake_ack_pcm_start, wake_ack_len) == ESP_OK) {
-                int wake_ack_ms = (wake_ack_len / 2) * 1000 / 16000;
-                vTaskDelay(pdMS_TO_TICKS(wake_ack_ms + 150));
+                /* Play "我在" and wait for it to finish before LISTENING
+                 * starts. There is no AEC on this board: starting capture
+                 * in parallel with the ack (tried earlier) made the device
+                 * hear its own "我在" over the mic and process THAT as the
+                 * user's command, ignoring whatever the user actually said
+                 * next. The product expects a two-step interaction (wake
+                 * phrase alone, wait for "我在", then the command), so it's
+                 * fine for capture to start only once the ack has fully
+                 * played out. A follow-up turn (below) skips this entirely:
+                 * playing "我在" again mid-conversation would be intrusive,
+                 * and there's no wake phrase to separate from the command
+                 * this time anyway. */
+                int wake_ack_len = (int)(wake_ack_pcm_end - wake_ack_pcm_start);
+                if (audio_play_tts(wake_ack_pcm_start, wake_ack_len) == ESP_OK) {
+                    int wake_ack_ms = (wake_ack_len / 2) * 1000 / 16000;
+                    vTaskDelay(pdMS_TO_TICKS(wake_ack_ms + 150));
+                }
+            } else {
+                ESP_LOGI(TAG, "Follow-up speech detected within conversation window, no wake word needed");
+                if (s_runtime.ui_ready) {
+                    (void)ui_update_status("Listening...");
+                }
             }
 
             s_runtime.voice_round_req = true;
@@ -2054,13 +2120,14 @@ void app_runtime_handle_audio_playback_complete(void)
         (void)voice_session_handle_event(&s_runtime.voice_session,
                                          VOICE_EVENT_TTS_END,
                                          "audio playback completed");
-        /* Nothing reset the main-panel status text after a voice round
-         * finished speaking, so it stayed on "Voice: speaking..." at idle
-         * indefinitely (until the next round overwrote it) -- misleading
-         * on the standby screen. */
-        if (s_runtime.ui_ready) {
-            (void)ui_update_status("Say: 你好小智");
-        }
+        /* Nothing used to reset the main-panel status text after a voice
+         * round finished speaking, so it stayed on "Voice: speaking..." at
+         * idle indefinitely -- misleading on the standby screen. Opening
+         * the conversation window here both fixes that (it sets its own
+         * status text) and starts the "already awake" follow-up period:
+         * the next turn doesn't need the wake word as long as it starts
+         * within CONVERSATION_FOLLOWUP_MS. */
+        app_runtime_open_conversation_window();
     }
 
     if (s_runtime.debug_playback_busy) {
