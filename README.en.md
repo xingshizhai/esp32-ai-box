@@ -5,7 +5,7 @@
 This repository contains two independently configurable and buildable ESP-IDF applications:
 
 - `ai-pet/`: Xiaozhi, a friendly AI pet for short voice conversations with the user.
-- `anti-pet/`: Shishen, an adversarial AI pet that challenges Xiaozhi to expose memory, logic, factual, and stability problems.
+- `anti-pet/`: Dashen, an adversarial AI pet that challenges Xiaozhi to expose memory, logic, factual, and stability problems.
 
 Roles are not tied to hardware. Either application can target ESP32-S3-BOX-3,
 ESP32-S3-LCD-EV-BOARD-2, or a future supported board.
@@ -26,17 +26,17 @@ Default deployment:
 | Project | Role | Default board | Default port | Start conversation |
 |---|---|---|---|---|
 | `ai-pet` | Xiaozhi | ESP32-S3-BOX-3 | `/dev/ttyACM0` | Say “你好，小智” or press the screen button |
-| `anti-pet` | Shishen | ESP32-S3-LCD-EV-BOARD-2 | `/dev/ttyUSB0` | Press “挑战小智”; the first round wakes Xiaozhi automatically |
+| `anti-pet` | Dashen | ESP32-S3-LCD-EV-BOARD-2 | `/dev/ttyUSB0` | Press “挑战小智”; the first round wakes Xiaozhi automatically |
 
-“你好，十神” requires a separately trained WakeNet model. Until that model is integrated,
-Shishen starts conversations from its screen button.
+“你好，大神” requires a separately trained WakeNet model. Until that model is integrated,
+Dashen starts conversations from its screen button.
 
 ## Repository Layout
 
 ```text
 esp32-ai-box/
 ├── ai-pet/                 # Xiaozhi: independent ESP-IDF project
-├── anti-pet/               # Shishen: independent ESP-IDF project
+├── anti-pet/               # Dashen: independent ESP-IDF project
 ├── components/             # Shared application, UI, audio, and board components
 ├── assets/                 # Shared fonts and SPIFFS assets
 ├── cmake/                  # Shared build setup
@@ -131,7 +131,7 @@ idf.py menuconfig
 ```
 
 Configure the board, Wi-Fi, chat API, and DashScope API as described for `ai-pet`.
-The “你好，十神” WakeNet model is disabled by default because the custom model is not included.
+The “你好，大神” WakeNet model is disabled by default because the custom model is not included.
 
 ### 3. Build
 
@@ -147,10 +147,10 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ### 5. Verify
 
-1. Confirm that the complete Shishen screen is visible and Wi-Fi connects.
+1. Confirm that the complete Dashen screen is visible and Wi-Fi connects.
 2. Press “挑战小智”.
-3. On the first round, confirm that Shishen says “你好，小智” and waits for Xiaozhi's reply.
-4. Confirm that Shishen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak a challenge.
+3. On the first round, confirm that Dashen says “你好，小智” and waits for Xiaozhi's reply.
+4. Confirm that Dashen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak a challenge.
 5. If “我在” is not detected, confirm that the UI asks for a retry and no challenge is spoken.
 6. Confirm that the device does not reboot and returns to idle.
 
@@ -159,12 +159,14 @@ idf.py -p /dev/ttyUSB0 flash monitor
 1. Flash `ai-pet` and `anti-pet` to separate devices.
 2. Place the devices facing each other without putting a speaker directly against a microphone.
 3. Monitor `/dev/ttyACM0` and `/dev/ttyUSB0` at the same time.
-4. Press Shishen's “挑战小智” button. On the first round, Shishen says “你好，小智”,
+4. Press Dashen's “挑战小智” button. On the first round, Dashen says “你好，小智”,
    waits for “我在”, then keeps listening and starts its first challenge only after Xiaozhi
    has remained quiet for the configured interval.
 5. Wait for Xiaozhi to finish before starting the next challenge. The initial handshake is not
-   repeated again during the same Shishen runtime.
-6. Run at least five rounds and check context, false wake-ups, ASR/TTS failures, and reboots.
+   repeated again during the same Dashen runtime.
+6. Dashen automatically recognizes Xiaozhi's answer and follows up with conversation context,
+   for up to five peer-reply turns by default.
+7. Check context, false wake-ups, ASR/TTS failures, and reboots.
 
 Do not allow unlimited automatic triggering. The test controller must enforce a round limit and a timeout per round.
 
@@ -254,10 +256,10 @@ idf.py build
 No. The active files are `ai-pet/sdkconfig` and `anti-pet/sdkconfig`. The root
 `sdkconfig.defaults.esp32s3*` files are shared defaults and must remain.
 
-### Why can “你好，十神” not be entered as a simple setting?
+### Why can “你好，大神” not be entered as a simple setting?
 
 WakeNet uses an acoustic model, not text matching. A matching trained model must be obtained and
-integrated. Shishen currently starts from its screen button. See
+integrated. Dashen currently starts from its screen button. See
 [wake-word model integration](docs/wake_word_change_plan.md).
 
 ## Additional Documentation

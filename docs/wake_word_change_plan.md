@@ -6,8 +6,8 @@
 
 - `ai-pet/`：角色“小智”，使用 ESP-SR 2.4.7 自带的
   `wn9_nihaoxiaozhi_tts`，短语为“你好，小智”。
-- `anti-pet/`：角色“十神”，预留模型过滤词 `nihaoshishen`。在拿到真实的
-  “你好，十神”模型前，默认关闭 WakeNet，通过屏幕“挑战小智”按钮主动发言。
+- `anti-pet/`：角色“大神”，预留模型过滤词 `nihaodashen`。在拿到真实的
+  “你好，大神”模型前，默认关闭 WakeNet，通过屏幕“挑战小智”按钮主动发言。
 
 角色参数分别位于 `ai-pet/main/app_role.c` 和 `anti-pet/main/app_role.c`；公共
 WakeNet 加载、音频采集和状态机位于 `components/app_core/app_runtime.c`。因此
@@ -20,7 +20,7 @@ WakeNet 是设备端声学模型，不是关键词字符串。修改 `wake_phras
 
 仓库没有本地训练流水线。“你好，小智”来自锁定版本 `espressif/esp-sr = 2.4.7`
 已经发布的 WakeNet 模型包。它也是通过训练得到的模型，并非应用代码根据文字
-即时生成。因此“你好，十神”可以重新训练，但必须先通过乐鑫的 TTS 社区申请或
+即时生成。因此“你好，大神”可以重新训练，但必须先通过乐鑫的 TTS 社区申请或
 商业定制流程取得模型文件。
 
 官方入口：
@@ -29,13 +29,13 @@ WakeNet 是设备端声学模型，不是关键词字符串。修改 `wake_phras
 - [乐鑫唤醒词定制流程](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/wake_word_engine/ESP_Wake_Words_Customization.html)
 - [TTS 唤醒词社区申请（ESP-SR issue #88）](https://github.com/espressif/esp-sr/issues/88)
 
-原型阶段可向 TTS Pipeline/社区申请提交：唤醒词“你好十神”、普通话、目标芯片
+原型阶段可向 TTS Pipeline/社区申请提交：唤醒词“你好大神”、普通话、目标芯片
 ESP32-S3、ESP-SR 版本、开源项目地址和用途。量产阶段应联系乐鑫完成真人语料、
 噪声和误唤醒指标的定制与授权确认。
 
-## 集成“你好，十神”模型
+## 集成“你好，大神”模型
 
-假设交付目录名为 `wn9_nihaoshishen_tts3`：
+假设交付目录名为 `wn9_nihaodashen_tts3`：
 
 1. 将完整模型目录加入 ESP-SR 的 `model/wakenet_model/`。两个项目有各自的
    `managed_components/`，长期维护时应将模型制作成受版本控制的私有组件或
@@ -44,7 +44,7 @@ ESP32-S3、ESP-SR 版本、开源项目地址和用途。量产阶段应联系�
 
    ```kconfig
    config SR_WN_WN9_NIHAOSHISHEN_TTS3
-       bool "你好十神 (wn9_nihaoshishen_tts3)"
+       bool "你好大神 (wn9_nihaodashen_tts3)"
        default n
    ```
 
@@ -56,7 +56,7 @@ ESP32-S3、ESP-SR 版本、开源项目地址和用途。量产阶段应联系�
    CONFIG_SR_WN_WN9_NIHAOSHISHEN_TTS3=y
    ```
 4. 确认 `anti-pet/main/app_role.c` 中的 `wake_model_filter` 能匹配模型目录名；当前
-   已预留为 `nihaoshishen`。
+   已预留为 `nihaodashen`。
 5. 在 `anti-pet/` 内完整构建并烧录所有分区：
 
    ```bash
@@ -69,7 +69,7 @@ ESP32-S3、ESP-SR 版本、开源项目地址和用途。量产阶段应联系�
 只烧录 app 不够，因为 ESP-SR 会重新生成并烧录 `model` 分区。成功日志应包含：
 
 ```text
-WakeNet ready: role=anti_pet phrase=你好，十神 model=<实际模型名>
+WakeNet ready: role=anti_pet phrase=你好，大神 model=<实际模型名>
 ```
 
 如果模型缺失，设备应输出 `WakeNet unavailable`；反 AI 宠物的屏幕按钮仍可使用，

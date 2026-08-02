@@ -72,7 +72,7 @@ CAPTURE_RATE = 44100
 PC_VOICE_DEFAULT = "longanhuan_v3"  # CosyVoice female voice ("欢脱元气女")
 WAKE_VOICE_DEFAULT = "longanhuan_v3"
 
-PERSONA_NAME = "十神"
+PERSONA_NAME = "大神"
 PERSONA_SYSTEM_PROMPT = (
     f"你叫{PERSONA_NAME}，是一个正在用语音测试智能音箱的真实用户，性格好奇、随和、有点爱开玩笑。"
     "你会收到设备刚才说的话（可能因为语音识别不完美有点走样）。"

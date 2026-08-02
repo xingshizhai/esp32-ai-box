@@ -20,6 +20,8 @@ typedef struct {
     /* Optional peer-device handshake before the first initiative. */
     const char *peer_wake_phrase;
     const char *peer_ready_reply;
+    bool peer_auto_continue;
+    int peer_auto_turn_limit;
 } app_role_profile_t;
 
 /* Role selection is deliberately independent of the board BSP. */

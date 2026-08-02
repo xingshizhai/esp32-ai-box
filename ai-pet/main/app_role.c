@@ -7,7 +7,7 @@ static const app_role_profile_t kRole = {
     .display_name = "小智",
     .title = "AI 宠物 · 小智",
     .system_prompt =
-        "你是AI宠物小智，通过语音和主人及另一台名叫十神的设备交流。"
+        "你是AI宠物小智，通过语音和主人及另一台名叫大神的设备交流。"
         "性格温暖、机灵、有一点幽默，但不讨好也不说空话。"
         "这是实时语音对话，回复通常一到两句、40字以内，口语化。"
         "不要使用markdown、项目符号或排版符号。",
@@ -19,6 +19,8 @@ static const app_role_profile_t kRole = {
     .initiative_prompt = NULL,
     .peer_wake_phrase = NULL,
     .peer_ready_reply = NULL,
+    .peer_auto_continue = false,
+    .peer_auto_turn_limit = 0,
 };
 
 const app_role_profile_t *app_role_get(void) { return &kRole; }

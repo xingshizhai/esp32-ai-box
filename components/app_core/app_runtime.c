@@ -81,6 +81,8 @@ typedef struct {
     volatile bool voice_round_req;
     volatile bool initiative_req;
     bool peer_handshake_confirmed;
+    volatile bool peer_reply_expected;
+    int peer_auto_turns;
     TaskHandle_t chat_worker_task;
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
     TaskHandle_t local_wakeup_task;
@@ -228,6 +230,7 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
                                            size_t assistant_text_size);
 static esp_err_t app_runtime_run_voice_chat_round(void);
 static esp_err_t app_runtime_run_role_initiative(void);
+static esp_err_t app_runtime_wait_for_peer_silence(void);
 static esp_err_t app_runtime_initialize_ai_service(void);
 static esp_err_t app_runtime_initialize_voice_gateway_client(void);
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
@@ -1390,16 +1393,30 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
         goto fail;
     }
 
+    const app_role_profile_t *role = app_role_get();
+    if (role->peer_auto_continue) {
+        fail_stage = "peer_silence";
+        err = app_runtime_wait_for_peer_silence();
+        if (err != ESP_OK) {
+            goto fail;
+        }
+    }
+
     (void)voice_session_handle_event(&s_runtime.voice_session, VOICE_EVENT_TTS_START, "tts queued");
 
     (void)audio_set_volume(cfg->volume);
     fail_stage = "playback";
+    bool arm_peer_reply = role->peer_auto_continue &&
+                          s_runtime.peer_handshake_confirmed &&
+                          s_runtime.peer_auto_turns < role->peer_auto_turn_limit;
+    s_runtime.peer_reply_expected = arm_peer_reply;
+    s_runtime.debug_playback_busy = true;
     err = audio_stream_play_chunk(tts_audio, tts_len);
     if (err != ESP_OK) {
+        s_runtime.peer_reply_expected = false;
+        s_runtime.debug_playback_busy = false;
         goto fail;
     }
-
-    s_runtime.debug_playback_busy = true;
     if (s_runtime.ui_ready) {
         (void)ui_update_status("Voice: speaking...");
         (void)ui_debug_set_playing_state(true);
@@ -1718,13 +1735,19 @@ static esp_err_t app_runtime_run_role_initiative(void)
     }
 
     (void)audio_set_volume(cfg->volume);
+    bool arm_peer_reply = role->peer_auto_continue &&
+                          s_runtime.peer_auto_turns < role->peer_auto_turn_limit;
+    s_runtime.peer_reply_expected = arm_peer_reply;
+    s_runtime.debug_playback_busy = true;
     err = audio_stream_play_chunk(tts_audio, tts_len);
     if (err == ESP_OK) {
-        s_runtime.debug_playback_busy = true;
         if (s_runtime.ui_ready) {
             (void)ui_update_status("正在挑战小智...");
         }
         ESP_LOGI(TAG, "Role initiative spoken: role=%s text=%s", role->id, assistant_text);
+    } else {
+        s_runtime.peer_reply_expected = false;
+        s_runtime.debug_playback_busy = false;
     }
 
 done:
@@ -1785,7 +1808,12 @@ static void app_handle_voice_round_request(void)
     ESP_LOGW(TAG, "Voice round failed: %s", esp_err_to_name(err));
     if (s_runtime.ui_ready) {
         char status[96] = {0};
-        snprintf(status, sizeof(status), "Voice failed: %s", esp_err_to_name(err));
+        const app_role_profile_t *role = app_role_get();
+        if (role->peer_auto_continue && s_runtime.peer_auto_turns > 0) {
+            snprintf(status, sizeof(status), "未识别到小智回复，本轮结束");
+        } else {
+            snprintf(status, sizeof(status), "Voice failed: %s", esp_err_to_name(err));
+        }
         (void)ui_update_status(status);
         (void)ui_debug_set_playing_state(false);
         (void)ui_debug_update_status(status);
@@ -2387,6 +2415,8 @@ void app_runtime_request_main_action(void)
     app_runtime_mark_activity();
     if (role->main_action_initiates_speech) {
         if (!s_runtime.initiative_req && !s_runtime.is_processing) {
+            s_runtime.peer_auto_turns = 0;
+            s_runtime.peer_reply_expected = false;
             s_runtime.initiative_req = true;
             if (s_runtime.chat_worker_task != NULL) {
                 (void)xTaskNotifyGive(s_runtime.chat_worker_task);
@@ -2532,6 +2562,22 @@ void app_runtime_handle_audio_playback_complete(void)
         s_runtime.debug_playback_busy = false;
         if (s_runtime.ui_ready) {
             (void)ui_debug_set_playing_state(false);
+        }
+    }
+
+    const app_role_profile_t *role = app_role_get();
+    if (s_runtime.peer_reply_expected && role->peer_auto_continue) {
+        s_runtime.peer_reply_expected = false;
+        if (s_runtime.peer_auto_turns < role->peer_auto_turn_limit) {
+            ++s_runtime.peer_auto_turns;
+            ESP_LOGI(TAG,
+                     "Peer reply capture scheduled: turn=%d/%d",
+                     s_runtime.peer_auto_turns,
+                     role->peer_auto_turn_limit);
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("等待小智回复...");
+            }
+            app_runtime_request_voice_round();
         }
     }
 
