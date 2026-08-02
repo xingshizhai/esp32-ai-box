@@ -64,7 +64,6 @@ static i2c_master_bus_handle_t          s_codec_i2c_bus  = NULL;
 static bool                             s_i2c_bus_owned  = false;
 static bool                             s_hw_ready       = false;
 static bool                             s_mic_muted      = false;
-static esp_codec_dev_sample_info_t      s_mic_fs_cfg     = {0};
 
 static void fill_debug_tone(int16_t *buf, int frames)
 {
@@ -145,37 +144,6 @@ static esp_err_t audio_stream_ensure_raw_buffer(int required_bytes)
 
     s_stream_raw_buf = new_buf;
     s_stream_raw_buf_bytes = required_bytes;
-    return ESP_OK;
-}
-
-static esp_err_t audio_refresh_mic_input(void)
-{
-    if (!s_hw_ready || s_mic_dev == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    int rc = esp_codec_dev_close(s_mic_dev);
-    if (rc != ESP_CODEC_DEV_OK) {
-        ESP_LOGW(TAG, "Mic close before refresh returned %d", rc);
-    }
-
-    rc = esp_codec_dev_open(s_mic_dev, &s_mic_fs_cfg);
-    if (rc != ESP_CODEC_DEV_OK) {
-        ESP_LOGE(TAG, "Mic reopen failed: %d", rc);
-        return ESP_FAIL;
-    }
-
-    rc = esp_codec_dev_set_in_mute(s_mic_dev, s_mic_muted);
-    if (rc != ESP_CODEC_DEV_OK) {
-        ESP_LOGW(TAG, "Mic mute apply failed: %d", rc);
-    }
-
-    rc = esp_codec_dev_set_in_channel_gain(s_mic_dev, MIC_GAIN_MASK, MIC_GAIN_DB);
-    if (rc != ESP_CODEC_DEV_OK) {
-        ESP_LOGW(TAG, "Mic channel gain set failed: %d, fallback to global gain", rc);
-        esp_codec_dev_set_in_gain(s_mic_dev, MIC_GAIN_DB);
-    }
-
     return ESP_OK;
 }
 
@@ -368,6 +336,11 @@ esp_err_t audio_init(void)
                         TAG, "I2S TX init failed");
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx_handle, &rx_std_cfg),
                         TAG, "I2S RX init failed");
+    /* esp_codec_dev reconfigures an active channel by disabling it first.
+     * Match the official BOX-3 BSP lifecycle so that initial codec open does
+     * not attempt to disable a channel that has never been enabled. */
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_handle), TAG, "I2S TX enable failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_handle), TAG, "I2S RX enable failed");
 
     /* 4. esp_codec_dev data interface (wraps I2S handles) ───────────── */
     audio_codec_i2s_cfg_t i2s_data_cfg = {
@@ -476,8 +449,6 @@ esp_err_t audio_init(void)
         .sample_rate     = SAMPLE_RATE,
         .mclk_multiple   = 0,
     };
-    s_mic_fs_cfg = mic_fs;
-
     int rc = esp_codec_dev_open(s_spk_dev, &spk_fs);
     if (rc != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "Speaker codec open failed (%d) – check I2C address cfg=0x%02X bus=0x%02X and GPIOs",
@@ -673,11 +644,6 @@ esp_err_t audio_debug_start_monitor(void)
         return ESP_OK;
     }
 
-    esp_err_t ret = audio_refresh_mic_input();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Mic refresh failed before monitor start: %s", esp_err_to_name(ret));
-    }
-
     s_is_monitoring = true;
     xTaskCreate(monitor_task, "audio_monitor", 4096, NULL, 5, &s_monitor_task);
     ESP_LOGI(TAG, "Mic monitor started");
@@ -725,11 +691,6 @@ esp_err_t audio_stream_start_capture(void)
         s_stream_capture_resume_monitor = true;
     }
 
-    esp_err_t ret = audio_refresh_mic_input();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Stream capture start: mic refresh failed: %s", esp_err_to_name(ret));
-    }
-
     s_stream_selected_ch = -1;
     s_stream_capture_active = true;
     ESP_LOGI(TAG, "Stream capture started");
@@ -767,12 +728,6 @@ esp_err_t audio_stream_read_capture_chunk(uint8_t *pcm_data, int pcm_capacity, i
     }
 
     int read_rc = esp_codec_dev_read(s_mic_dev, s_stream_raw_buf, raw_bytes_to_read);
-    if (read_rc != ESP_CODEC_DEV_OK) {
-        esp_err_t refresh_ret = audio_refresh_mic_input();
-        if (refresh_ret == ESP_OK) {
-            read_rc = esp_codec_dev_read(s_mic_dev, s_stream_raw_buf, raw_bytes_to_read);
-        }
-    }
     if (read_rc != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "Stream capture read failed: %d", read_rc);
         xSemaphoreGive(s_stream_mutex);
@@ -894,7 +849,6 @@ esp_err_t audio_debug_record_sample(uint8_t **data, int *len)
         int peak = 0;
         int frames_done = 0;
         int read_rc = ESP_CODEC_DEV_OK;
-        bool retried_after_refresh = false;
         int selected_ch = -1;
         int64_t sample_sum = 0;
 
@@ -907,17 +861,8 @@ esp_err_t audio_debug_record_sample(uint8_t **data, int *len)
             int bytes_to_read = frames_to_read * MIC_CHANNELS * BYTES_PER_SAMPLE;
             read_rc = esp_codec_dev_read(s_mic_dev, raw, bytes_to_read);
             if (read_rc != ESP_CODEC_DEV_OK) {
-                if (!retried_after_refresh) {
-                    retried_after_refresh = true;
-                    esp_err_t refresh_ret = audio_refresh_mic_input();
-                    if (refresh_ret == ESP_OK) {
-                        ESP_LOGW(TAG, "Mic read error %d at frame %d/%d, refreshed mic path and retry",
-                                 read_rc, frames_done, total_frames);
-                        continue;
-                    }
-                    ESP_LOGW(TAG, "Mic read error %d and refresh failed: %s",
-                             read_rc, esp_err_to_name(refresh_ret));
-                }
+                ESP_LOGW(TAG, "Mic read error %d at frame %d/%d",
+                         read_rc, frames_done, total_frames);
                 break;
             }
 

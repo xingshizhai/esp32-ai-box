@@ -1737,6 +1737,12 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
 {
     app_config_t *cfg = config_get();
     const bool embedded = CONFIG_VOICE_GATEWAY_MODE_EMBEDDED;
+    /* DashScope uses the same API-key format for its HTTP and WebSocket
+     * services. Keep the dedicated override, but reuse the configured Aliyun
+     * provider key by default so embedded mode needs only one credential. */
+    const char *embedded_api_key = CONFIG_VOICE_DASHSCOPE_API_KEY[0] != '\0'
+                                       ? CONFIG_VOICE_DASHSCOPE_API_KEY
+                                       : CONFIG_VOICE_ALIYUN_API_KEY;
 
     if (s_runtime.voice_gateway_client != NULL) {
         voice_gateway_client_destroy(s_runtime.voice_gateway_client);
@@ -1748,8 +1754,8 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
         return ESP_OK;
     }
 
-    if (embedded && CONFIG_VOICE_DASHSCOPE_API_KEY[0] == '\0') {
-        ESP_LOGW(TAG, "Embedded voice gateway requires VOICE_DASHSCOPE_API_KEY");
+    if (embedded && embedded_api_key[0] == '\0') {
+        ESP_LOGW(TAG, "Embedded voice gateway requires a DashScope/Aliyun API key");
         if (s_runtime.ui_ready) {
             (void)ui_update_status("Configure DashScope voice key");
         }
@@ -1767,7 +1773,7 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
         .timeout_ms = (cfg->tts_timeout_ms > cfg->stt_timeout_ms)
                           ? cfg->tts_timeout_ms
                           : cfg->stt_timeout_ms,
-        .embedded_api_key = CONFIG_VOICE_DASHSCOPE_API_KEY,
+        .embedded_api_key = embedded_api_key,
         .embedded_websocket_url = CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL,
         .embedded_stt_model = CONFIG_VOICE_DASHSCOPE_STT_MODEL,
         .embedded_tts_model = CONFIG_VOICE_DASHSCOPE_TTS_MODEL,
@@ -1803,6 +1809,11 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
     ESP_LOGI(TAG, "Voice gateway client initialised: mode=%s endpoint=%s",
              embedded ? "embedded" : "external",
              embedded ? CONFIG_VOICE_DASHSCOPE_WEBSOCKET_URL : cfg->voice_gateway_url);
+    if (embedded) {
+        ESP_LOGI(TAG, "Embedded gateway credential source=%s",
+                 CONFIG_VOICE_DASHSCOPE_API_KEY[0] != '\0' ? "dedicated DashScope key"
+                                                            : "Aliyun provider key");
+    }
     return ESP_OK;
 }
 
