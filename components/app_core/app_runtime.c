@@ -106,7 +106,7 @@ static app_runtime_state_t s_runtime = {0};
  * short smart-speaker commands and truncates ordinary sentences; widened to
  * give natural speech room without dragging out short commands too much. */
 #define VOICE_CAPTURE_MS             (7000)
-#define PEER_HANDSHAKE_CAPTURE_MS    (2800)
+#define PEER_HANDSHAKE_CAPTURE_MS    (3500)
 #define VOICE_STT_TEXT_MAX           (1024)
 #define VOICE_SESSION_ID_MAX         (64)
 #define PCM_S16LE_BYTES_PER_SAMPLE   (2)
@@ -1091,6 +1091,30 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
     }
 
     bool capture_started = false;
+    if (playback_audio != NULL && playback_audio_len > 0) {
+        /* Establish cloud ASR first, but do not open the microphone while our
+         * wake phrase is playing. On LCD-EV hardware, simultaneous playback
+         * either monopolizes the codec or overwhelms the mic with self-echo.
+         * Mark busy before queueing to avoid a fast completion callback race. */
+        s_runtime.debug_playback_busy = true;
+        err = audio_stream_play_chunk(playback_audio, playback_audio_len);
+        if (err != ESP_OK) {
+            s_runtime.debug_playback_busy = false;
+            free(chunk_buf);
+            return err;
+        }
+        TickType_t playback_started = xTaskGetTickCount();
+        while (s_runtime.debug_playback_busy &&
+               app_runtime_elapsed_ms(playback_started, xTaskGetTickCount()) < 10000) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (s_runtime.debug_playback_busy) {
+            s_runtime.debug_playback_busy = false;
+            free(chunk_buf);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+
     err = audio_stream_start_capture();
     if (err != ESP_OK) {
         free(chunk_buf);
@@ -1100,16 +1124,6 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
     if (trace != NULL) {
         trace->capture_started = true;
         trace->capture_start_tick = xTaskGetTickCount();
-    }
-
-    if (playback_audio != NULL && playback_audio_len > 0) {
-        err = audio_stream_play_chunk(playback_audio, playback_audio_len);
-        if (err != ESP_OK) {
-            (void)audio_stream_stop_capture();
-            free(chunk_buf);
-            return err;
-        }
-        s_runtime.debug_playback_busy = true;
     }
 
     int total_chunks = (capture_ms + chunk_ms - 1) / chunk_ms;
@@ -1664,9 +1678,8 @@ static esp_err_t app_runtime_run_role_initiative(void)
                  role->id,
                  role->peer_wake_phrase,
                  role->peer_ready_reply);
-        /* Start ASR capture first, then play the wake phrase from inside the
-         * capture loop. This prevents a fast peer reply from arriving while
-         * the ASR WebSocket is still being established. */
+        /* Establish ASR first, finish the wake phrase, then capture. This
+         * avoids both WebSocket startup latency and local speaker self-echo. */
         esp_err_t ack_err = app_runtime_capture_peer_reply(peer_reply,
                                                            sizeof(peer_reply),
                                                            wake_audio,
