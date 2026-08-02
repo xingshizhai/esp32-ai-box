@@ -1,0 +1,53 @@
+# Board-specific sdkconfig defaults for ESP32-S3-LCD-EV-BOARD-2.
+# Loaded by the selected product project's shared CMake bootstrap. Only applied
+# on fresh sdkconfig creation — run
+# "idf.py fullclean" after switching boards for this to take effect.
+CONFIG_APP_BOARD_ESP32S3_LCD_EV_BOARD=y
+
+# ── LCD sub-board selection ─────────────────────────────────────────────────
+# Sub-board 3 (default): 4.3" 800x480 RGB (ST7262E43), touch: GT1151
+CONFIG_BSP_LCD_SUB_BOARD_800_480=y
+# Sub-board 2: 3.95" 480x480 RGB (GC9503CV), touch: FT5x06
+# To use it instead, switch this in menuconfig under
+# "Component config" -> "Board Support Package" -> "LCD" -> "Select Target Sub board"
+# and re-run idf.py fullclean.
+
+# ── RGB frame-buffer / bounce-buffer config ─────────────────────────────────
+# 2 buffers are required for avoid_tearing mode: lvgl_port retrieves both from
+# the panel and swaps them on vsync. With only 1 buffer, LVGL writes while DMA
+# is reading the same memory, which is why bounce-buffer mode is used instead.
+CONFIG_BSP_LCD_RGB_BUFFER_NUMS=1
+CONFIG_BSP_LCD_RGB_REFRESH_AUTO=y
+
+# Bounce buffer: LCD DMA reads from a small SRAM bounce buffer instead of
+# directly from PSRAM, eliminating PSRAM bandwidth contention between the CPU
+# and LCD DMA (the root cause of a horizontal scroll tearing artifact on this
+# BSP's RGB interface).
+CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_MODE=y
+CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_HEIGHT=10
+
+# ── I2C bus (shared by touch, display IO-expander, and audio codecs) ───────
+CONFIG_BSP_I2C_NUM=1
+
+# ── Audio pins for this board ───────────────────────────────────────────────
+# From bsp/esp32_s3_lcd_ev_board.h: BSP_I2S_MCLK=5, BSP_I2S_SCLK(bclk)=16,
+# BSP_I2S_LCLK(ws)=7, BSP_I2S_DOUT=6 (-> ES8311 speaker),
+# BSP_I2S_DSIN=15 (<- ES7210 mic).
+CONFIG_AUDIO_I2S_MCLK_GPIO=5
+CONFIG_AUDIO_I2S_BCLK_GPIO=16
+CONFIG_AUDIO_I2S_WS_GPIO=7
+CONFIG_AUDIO_I2S_DOUT_GPIO=6
+CONFIG_AUDIO_I2S_DIN_GPIO=15
+CONFIG_AUDIO_CODEC_I2C_PORT=1
+CONFIG_AUDIO_ES8311_I2C_ADDR=0x18
+# This board's ES7210 sits at 0x41 (7-bit) / 0x82 (8-bit) -- see
+# BSP_ES7210_CODEC_ADDR in the espressif/esp32_s3_lcd_ev_board BSP source,
+# different from BOX-3's 0x40/0x80. Confirmed on real hardware: 0x40 fails
+# with "ES7210: Write register fail" / "Open fail".
+CONFIG_AUDIO_ES7210_I2C_ADDR=0x41
+
+# The speaker PA enable line on this board is behind the TCA9554 IO-expander,
+# not a raw ESP32 GPIO (see app_display_enable_speaker_amp() in
+# components/boards/esp32s3_lcd_ev_board/src/board_display.c). Disable
+# the audio component's own raw-GPIO PA control.
+CONFIG_AUDIO_PA_GPIO=-1

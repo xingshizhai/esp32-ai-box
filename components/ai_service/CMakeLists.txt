@@ -1,0 +1,15 @@
+idf_component_register(
+    SRCS 
+        "ai_service.c"
+        "providers/openai.c"
+        "providers/zhipu.c"
+        "providers/deepseek.c"
+    INCLUDE_DIRS
+        "."
+        "providers"
+    REQUIRES
+        config
+        esp_http_client
+        mbedtls
+        cjson
+)

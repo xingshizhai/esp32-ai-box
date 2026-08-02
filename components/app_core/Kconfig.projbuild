@@ -1,0 +1,614 @@
+menu "Ai-Box Configuration"
+
+    choice APP_BOARD
+        prompt "Target board"
+        default APP_BOARD_ESP32S3_BOX3
+        help
+            Select the target development board. After changing this option,
+            run "idf.py fullclean" then rebuild so the correct board BSP
+            component is linked and the board's sdkconfig defaults apply.
+
+        config APP_BOARD_ESP32S3_BOX3
+            bool "ESP32-S3-BOX-3 (320x240 SPI)"
+        config APP_BOARD_ESP32S3_LCD_EV_BOARD
+            bool "ESP32-S3-LCD-EV-BOARD-2 (480x480 or 800x480 RGB)"
+        config APP_BOARD_CUSTOM
+            bool "Custom board (user-defined)"
+            help
+                Implement components/boards/custom/src/board_display.c
+                for your own display/touch hardware. Audio pins are still
+                configured separately below, under "Audio Hardware
+                Configuration".
+    endchoice
+
+    menu "Device Debugging"
+
+        config UI_DEBUG_SCREENSHOT_ENABLED
+            bool "Enable remote LVGL screenshots"
+            default y
+            help
+                Mirror the LVGL framebuffer and expose it over TCP so the
+                development tools can inspect the physical device UI.
+
+        config UI_DEBUG_SCREENSHOT_PORT
+            int "Screenshot TCP port"
+            depends on UI_DEBUG_SCREENSHOT_ENABLED
+            range 1024 65535
+            default 3333
+
+        config UI_DEBUG_INPUT_ENABLED
+            bool "Enable remote synthetic touch input"
+            default y
+            help
+                Expose a TCP endpoint that injects pointer events into LVGL.
+                This is intended for development and UI regression testing.
+
+        config UI_DEBUG_INPUT_PORT
+            int "Synthetic input TCP port"
+            depends on UI_DEBUG_INPUT_ENABLED
+            range 1024 65535
+            default 3334
+
+    endmenu
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            WiFi SSID used on first boot (before NVS is configured)
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WiFi password used on first boot (before NVS is configured)
+
+    choice AI_PROVIDER
+        prompt "Default Chat Provider"
+        default AI_PROVIDER_DEEPSEEK
+        help
+            Select the default chat provider to use.
+
+        config AI_PROVIDER_OPENAI
+            bool "OpenAI (requires proxy in China)"
+        config AI_PROVIDER_ZHIPU
+            bool "Zhipu AI (GLM)"
+        config AI_PROVIDER_DEEPSEEK
+            bool "DeepSeek (recommended for China)"
+    endchoice
+
+    menu "Chat Provider Profiles"
+
+        config OPENAI_API_KEY_DEFAULT
+            string "OpenAI API Key"
+            default ""
+            help
+                API key used when provider is set to OpenAI.
+
+        config OPENAI_BASE_URL_DEFAULT
+            string "OpenAI Base URL"
+            default "https://api.openai.com/v1/chat/completions"
+            help
+                OpenAI-compatible chat completion endpoint.
+
+        config OPENAI_MODEL_DEFAULT
+            string "OpenAI Default Model"
+            default "gpt-4o-mini"
+            help
+                Model name used for OpenAI provider.
+
+        config ZHIPU_API_KEY_DEFAULT
+            string "Zhipu API Key"
+            default ""
+            help
+                API key used when provider is set to Zhipu.
+
+        config ZHIPU_BASE_URL_DEFAULT
+            string "Zhipu Base URL"
+            default "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            help
+                Chat completion endpoint for Zhipu AI.
+
+        config ZHIPU_MODEL_DEFAULT
+            string "Zhipu Default Model"
+            default "glm-4-flash"
+            help
+                Model name used for Zhipu provider.
+
+        config DEEPSEEK_API_KEY_DEFAULT
+            string "DeepSeek API Key"
+            default ""
+            help
+                API key used when provider is set to DeepSeek.
+
+        config DEEPSEEK_BASE_URL_DEFAULT
+            string "DeepSeek Base URL"
+            default "https://api.deepseek.com/v1/chat/completions"
+            help
+                Chat completion endpoint for DeepSeek.
+
+        config DEEPSEEK_MODEL_DEFAULT
+            string "DeepSeek Default Model"
+            default "deepseek-chat"
+            help
+                Model name used for DeepSeek provider.
+
+    endmenu
+
+    menu "Voice Configuration"
+
+        menu "Voice Provider Profiles"
+
+            config VOICE_VOLCENGINE_APP_ID
+                string "Volcengine APP ID"
+                default ""
+                help
+                    Volcengine application ID for voice services.
+
+            config VOICE_VOLCENGINE_ACCESS_TOKEN
+                string "Volcengine Access Token"
+                default ""
+                help
+                    Volcengine access token for voice services.
+
+            config VOICE_VOLCENGINE_SECRET_KEY
+                string "Volcengine Secret Key"
+                default ""
+                help
+                    Volcengine secret key for voice services.
+
+            config VOICE_VOLCENGINE_STT_BASE_URL
+                string "Volcengine STT Base URL"
+                default "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+                help
+                    Upstream STT endpoint for Volcengine provider.
+                    Recommended: bigmodel_async endpoint from Volcengine docs.
+
+            config VOICE_VOLCENGINE_STT_MODEL
+                string "Volcengine STT Model"
+                default "bigmodel"
+                help
+                    STT model used by Volcengine provider.
+                    Current supported value: bigmodel.
+
+            config VOICE_VOLCENGINE_TTS_BASE_URL
+                string "Volcengine TTS Base URL"
+                default "https://openspeech.bytedance.com/api/v1/tts"
+                help
+                    Upstream TTS endpoint for Volcengine provider.
+                    HTTP (non-stream): https://openspeech.bytedance.com/api/v1/tts
+                    WebSocket (stream): wss://openspeech.bytedance.com/api/v1/tts/ws_binary
+
+            config VOICE_VOLCENGINE_TTS_VOICE
+                string "Volcengine TTS Voice"
+                default ""
+                help
+                    Voice identifier used by Volcengine TTS.
+
+            config VOICE_ALIYUN_API_KEY
+                string "Aliyun API Key"
+                default ""
+                help
+                    API key used by Aliyun voice services.
+
+            config VOICE_ALIYUN_STT_BASE_URL
+                string "Aliyun STT Base URL"
+                default ""
+                help
+                    Upstream STT endpoint for Aliyun provider.
+
+            config VOICE_ALIYUN_STT_MODEL
+                string "Aliyun STT Model"
+                default ""
+                help
+                    STT model used by Aliyun provider.
+
+            config VOICE_ALIYUN_TTS_BASE_URL
+                string "Aliyun TTS Base URL"
+                default ""
+                help
+                    Upstream TTS endpoint for Aliyun provider.
+
+            config VOICE_ALIYUN_TTS_VOICE
+                string "Aliyun TTS Voice/Model"
+                default ""
+                help
+                    Voice or model identifier used by Aliyun TTS.
+
+            config VOICE_CUSTOM_API_KEY
+                string "Custom Provider API Key"
+                default ""
+                help
+                    API key used by custom voice provider.
+
+            config VOICE_CUSTOM_STT_BASE_URL
+                string "Custom STT Base URL"
+                default ""
+                help
+                    Upstream STT endpoint for custom provider.
+
+            config VOICE_CUSTOM_STT_MODEL
+                string "Custom STT Model"
+                default ""
+                help
+                    STT model used by custom provider.
+
+            config VOICE_CUSTOM_TTS_BASE_URL
+                string "Custom TTS Base URL"
+                default ""
+                help
+                    Upstream TTS endpoint for custom provider.
+
+            config VOICE_CUSTOM_TTS_VOICE
+                string "Custom TTS Voice/Model"
+                default ""
+                help
+                    Voice or model identifier used by custom TTS.
+
+        endmenu
+
+        menu "Speech-to-Text (STT)"
+
+            choice STT_PROVIDER
+                prompt "Default STT Provider"
+                default STT_PROVIDER_VOLCENGINE
+                help
+                    Select the default speech-to-text provider.
+
+                config STT_PROVIDER_VOLCENGINE
+                    bool "Volcengine"
+                config STT_PROVIDER_ALIYUN
+                    bool "Aliyun"
+                config STT_PROVIDER_CUSTOM
+                    bool "Custom"
+            endchoice
+
+            menu "Volcengine STT Advanced"
+                depends on STT_PROVIDER_VOLCENGINE
+
+                config VOLCENGINE_STT_LANGUAGE
+                    string "Volcengine STT Language"
+                    default "zh-CN"
+                    help
+                        Language value sent in Volcengine audio config, e.g. zh-CN / en-US.
+
+                config VOLCENGINE_STT_ENABLE_ITN
+                    bool "Volcengine STT Enable ITN"
+                    default y
+                    help
+                        Enable inverse text normalization in Volcengine ASR request.
+
+                config VOLCENGINE_STT_ENABLE_PUNC
+                    bool "Volcengine STT Enable Punctuation"
+                    default y
+                    help
+                        Enable punctuation prediction in Volcengine ASR request.
+
+                config VOLCENGINE_STT_ENABLE_NONSTREAM
+                    bool "Volcengine STT Enable Nonstream Second Pass"
+                    default n
+                    help
+                        Enable stream+nonstream second-pass recognition (higher accuracy, more latency).
+
+                config VOLCENGINE_STT_RESULT_TYPE
+                    string "Volcengine STT Result Type"
+                    default "full"
+                    help
+                        Result type passed to Volcengine request: full or single.
+
+                config VOLCENGINE_STT_END_WINDOW_SIZE_MS
+                    int "Volcengine STT End Window Size (ms)"
+                    default 800
+                    range 200 5000
+                    help
+                        Forced stop window for Volcengine streaming sentence finalization.
+            endmenu
+
+        endmenu
+
+        menu "Text-to-Speech (TTS)"
+
+            choice TTS_PROVIDER
+                prompt "Default TTS Provider"
+                default TTS_PROVIDER_VOLCENGINE
+                help
+                    Select the default text-to-speech provider.
+
+                config TTS_PROVIDER_VOLCENGINE
+                    bool "Volcengine"
+                config TTS_PROVIDER_ALIYUN
+                    bool "Aliyun"
+                config TTS_PROVIDER_CUSTOM
+                    bool "Custom"
+            endchoice
+
+        endmenu
+
+        menu "Voice Gateway"
+
+            choice VOICE_GATEWAY_MODE
+                prompt "Voice Gateway Mode"
+                default VOICE_GATEWAY_MODE_EMBEDDED
+                help
+                    Embedded connects the ESP32 directly to DashScope.
+                    External uses the compatible HTTP gateway service.
+
+                config VOICE_GATEWAY_MODE_EMBEDDED
+                    bool "Embedded on ESP32 (Alibaba Cloud DashScope)"
+
+                config VOICE_GATEWAY_MODE_EXTERNAL
+                    bool "External HTTP gateway"
+
+                config VOICE_GATEWAY_MODE_DISABLED
+                    bool "Disabled"
+            endchoice
+
+            config ENABLE_VOICE_GATEWAY
+                bool
+                default n if VOICE_GATEWAY_MODE_DISABLED
+                default y
+
+            config VOICE_DASHSCOPE_API_KEY
+                string "Alibaba Cloud DashScope API Key"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default ""
+                help
+                    Alibaba Cloud Model Studio (DashScope) API key stored on
+                    the device and used by both Fun-ASR and CosyVoice.
+
+            config VOICE_DASHSCOPE_WEBSOCKET_URL
+                string "Alibaba Cloud DashScope WebSocket URL"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "wss://dashscope.aliyuncs.com/api-ws/v1/inference/"
+
+            config VOICE_DASHSCOPE_STT_MODEL
+                string "Alibaba Cloud ASR Model"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "fun-asr-realtime"
+                help
+                    DashScope speech recognition model used by the ESP32.
+
+            config VOICE_DASHSCOPE_TTS_MODEL
+                string "Alibaba Cloud TTS Model"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "cosyvoice-v3-flash"
+                help
+                    DashScope speech synthesis model used by the ESP32.
+
+            config VOICE_DASHSCOPE_TTS_VOICE
+                string "Alibaba Cloud TTS Voice"
+                depends on VOICE_GATEWAY_MODE_EMBEDDED
+                default "longanyang"
+
+            config DEFAULT_VOICE_GATEWAY_URL
+                string "Default Voice Gateway URL"
+                depends on VOICE_GATEWAY_MODE_EXTERNAL
+                default ""
+                help
+                    Compatible external HTTP gateway endpoint.
+
+            config DEFAULT_VOICE_GATEWAY_TOKEN
+                string "Default Voice Gateway Token"
+                depends on VOICE_GATEWAY_MODE_EXTERNAL
+                default ""
+                help
+                    Optional static token used to authenticate against the voice gateway.
+
+        endmenu
+
+        menu "Voice Runtime"
+
+            config ENABLE_LOCAL_OFFLINE_WAKEUP
+                bool "Enable on-device WakeNet wake word"
+                default y
+                help
+                    Continuously run Espressif WakeNet on the ESP32-S3.
+                    Audio stays on the device until the wake word is detected.
+                    The application project selects its required wake model.
+
+            config LOCAL_WAKEUP_COOLDOWN_MS
+                int "Wake word cooldown (ms)"
+                depends on ENABLE_LOCAL_OFFLINE_WAKEUP
+                default 2500
+                range 500 10000
+                help
+                    Minimum interval between two accepted wake word events.
+
+            config ENABLE_BARGE_IN
+                bool "Enable barge-in by default"
+                default y
+                help
+                    Allow user speech to interrupt TTS playback.
+
+            config VAD_SILENCE_MS
+                int "Default VAD silence threshold (ms)"
+                default 800
+                range 100 5000
+                help
+                    Silence duration before ending a speech segment.
+
+            config PEER_SILENCE_WAIT_MS
+                int "Peer-device quiet time before speaking (ms)"
+                default 700
+                range 300 5000
+                help
+                    For roles that control another voice device, require this
+                    much continuous quiet before starting local playback.
+
+            config PEER_SILENCE_TIMEOUT_MS
+                int "Peer-device silence wait timeout (ms)"
+                default 15000
+                range 1000 60000
+                help
+                    Give up the turn instead of talking over the peer when no
+                    sufficiently long quiet interval is detected.
+
+            config PEER_SPEECH_LEVEL_THRESHOLD
+                int "Peer-device PCM speech threshold"
+                default 600
+                range 50 10000
+                help
+                    Mean absolute 16-bit PCM level above which the peer is
+                    considered to be speaking. Increase for noisy rooms.
+
+            config STT_TIMEOUT_MS
+                int "Default STT timeout (ms)"
+                default 8000
+                range 500 60000
+                help
+                    Timeout for STT request completion.
+
+            config TTS_TIMEOUT_MS
+                int "Default TTS timeout (ms)"
+                default 12000
+                range 500 60000
+                help
+                    Timeout for TTS request completion.
+
+            config AUDIO_CHUNK_MS
+                int "Default audio upload chunk (ms)"
+                default 200 if STT_PROVIDER_VOLCENGINE
+                default 20
+                range 10 200
+                help
+                    PCM chunk duration sent to STT in streaming mode.
+
+        endmenu
+
+    endmenu
+
+    config MAX_TOKENS
+        int "Max Tokens"
+        default 2000
+        range 100 4096
+        help
+            Maximum number of tokens in AI response
+
+    config TEMPERATURE
+        float "Temperature"
+        default 0.7
+        range 0.0 2.0
+        help
+            Sampling temperature (0.0-2.0)
+
+    config HISTORY_LIMIT
+        int "Conversation History Limit"
+        default 10
+        range 1 20
+        help
+            Maximum number of messages in conversation history
+
+    config WIFI_MAX_RETRY
+        int "WiFi Max Retry"
+        default 5
+        help
+            Maximum number of WiFi connection retries
+
+    config VOLUM
+        int "Default Volume"
+        default 80
+        range 0 100
+        help
+            Default audio volume (0-100)
+
+    config SDCARD_ENABLED
+        bool "Enable SD Card Support"
+        default n
+        help
+            Enable SD card (SDMMC) driver and debug menu entries.
+            Disable if your board does not have an SD card slot or
+            if the SD card GPIO pins conflict with other peripherals.
+
+    menu "Audio Hardware Configuration"
+
+        config AUDIO_I2S_MCLK_GPIO
+            int "I2S MCLK GPIO (-1 = not used)"
+            default 2
+            range -1 48
+            help
+                GPIO number for I2S MCLK (master clock). Set to -1 if not connected.
+
+        config AUDIO_I2S_BCLK_GPIO
+            int "I2S BCLK GPIO"
+            default 17
+            range 0 48
+            help
+                GPIO number for I2S bit clock.
+
+        config AUDIO_I2S_WS_GPIO
+            int "I2S WS (LRCK) GPIO"
+            default 45
+            range 0 48
+            help
+                GPIO number for I2S word select / left-right clock.
+
+        config AUDIO_I2S_DOUT_GPIO
+            int "I2S DOUT GPIO (ESP -> codec speaker)"
+            default 15
+            range 0 48
+            help
+                GPIO number for I2S data output (to codec DAC input).
+
+        config AUDIO_I2S_DIN_GPIO
+            int "I2S DIN GPIO (codec mic -> ESP)"
+            default 16
+            range 0 48
+            help
+                GPIO number for I2S data input (from codec ADC output).
+
+        config AUDIO_CODEC_I2C_PORT
+            int "Codec I2C port number"
+            default 1
+            range 0 1
+            help
+                I2C port used for codec control (ES8311/ES7210).
+                Use a separate port from touch if possible.
+                On ESP-BOX-3 compatible hardware use port 1.
+
+        config AUDIO_CODEC_I2C_SCL_GPIO
+            int "Codec I2C SCL GPIO"
+            default 18
+            range 0 48
+            help
+                GPIO number for codec control I2C SCL.
+
+        config AUDIO_CODEC_I2C_SDA_GPIO
+            int "Codec I2C SDA GPIO"
+            default 8
+            range 0 48
+            help
+                GPIO number for codec control I2C SDA.
+
+        config AUDIO_ES8311_I2C_ADDR
+            hex "ES8311 I2C address (7-bit or 8-bit)"
+            default 0x18
+            help
+                Codec I2C address for ES8311.
+                You can input 7-bit address (0x18) or 8-bit address (0x30).
+                The firmware normalizes 7-bit value to 8-bit internally.
+
+        config AUDIO_ES7210_I2C_ADDR
+            hex "ES7210 I2C address (7-bit or 8-bit)"
+            default 0x40
+            help
+                Codec I2C address for ES7210.
+                You can input 7-bit address (0x40) or 8-bit address (0x80).
+                The firmware normalizes 7-bit value to 8-bit internally.
+
+        config AUDIO_PA_GPIO
+            int "Power Amplifier enable GPIO (-1 = not used)"
+            default 46
+            range -1 48
+            help
+                GPIO to drive the external power amplifier enable pin.
+                Set to -1 if there is no PA chip or it is always-on.
+
+        config AUDIO_PA_INVERTED
+            bool "Power Amplifier pin active-low"
+            default n
+            help
+                If enabled the PA is turned on when the GPIO is driven low.
+
+    endmenu
+
+endmenu

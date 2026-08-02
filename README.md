@@ -1,251 +1,268 @@
-# AI Chat Demo for ESP32-S3-BOX-3
+# ESP32 双 AI 宠物
 
-一个模块化、易扩展的AI聊天机器人项目，支持多种AI模型切换，专门针对中国大陆使用优化。
+[中文](README.md) | [English](README.en.md)
 
-## 功能特点
+本仓库包含两个可以独立配置、编译和烧录的 ESP-IDF 项目：
 
-- **多模型支持**：OpenAI、智谱AI(GLM)、DeepSeek，易于扩展其他模型
-- **语音交互**：完整的语音识别、AI对话、语音播报功能
-- **对话记忆**：支持上下文理解的对话历史管理
-- **中国大陆友好**：优先使用国内AI服务，支持代理配置
-- **模块化设计**：清晰的架构分层，方便维护和扩展
-- **调试功能**：内置麦克风和音频播放调试界面
+- `ai-pet/`：AI 宠物“小智”，与用户进行友好、简短的语音对话。
+- `anti-pet/`：反 AI 宠物“大神”，主动向小智提问，测试它的记忆、逻辑、事实性和稳定性。
 
-## 硬件要求
+两个角色不绑定硬件。任一项目都可以选择 ESP32-S3-BOX-3、
+ESP32-S3-LCD-EV-BOARD-2，或以后新增的开发板。
 
-- ESP32-S3-BOX-3开发板
-- USB-C数据线
+## 主要功能
+
+- 设备端麦克风采集和扬声器播放。
+- 阿里云 DashScope ASR/TTS，可使用 ESP32 内置语音网关，也可切换外部网关。
+- DeepSeek、OpenAI 和智谱等聊天模型。
+- 多轮对话上下文。
+- LVGL 中文界面。
+- 设备端 WakeNet 唤醒。
+- 串口诊断、远程截图和模拟触摸调试。
+- 两台设备之间的语音闭环压力测试。
+
+默认行为：
+
+| 项目 | 角色 | 默认板型 | 默认端口 | 启动会话 |
+|---|---|---|---|---|
+| `ai-pet` | 小智 | ESP32-S3-BOX-3 | `/dev/ttyACM0` | “你好，小智”或屏幕按钮 |
+| `anti-pet` | 大神 | ESP32-S3-LCD-EV-BOARD-2 | `/dev/ttyUSB0` | 屏幕“挑战小智”按钮；首次自动唤醒小智 |
+
+“你好，大神”需要单独训练并集成 WakeNet 模型。在模型可用前，大神使用屏幕按钮
+主动发起会话。
 
 ## 项目结构
 
-```
-.
-│   ├── main.c              # 主程序入口
-│   ├── components/         # 功能模块
-│   │   ├── ai_service/     # AI服务抽象层
-│   │   │   ├── providers/  # 各个AI提供商实现
-│   │   │   │   ├── openai.c    # OpenAI实现
-│   │   │   │   ├── zhipu.c      # 智谱AI实现
-│   │   │   │   └── deepseek.c  # DeepSeek实现
-│   │   ├── conversation/   # 对话历史管理
-│   │   ├── config/         # 配置管理(NVS)
-│   │   ├── network/        # 网络连接管理
-│   │   ├── ui/             # LVGL界面控制
-│   │   └── audio/          # 音频处理
-│   ├── CMakeLists.txt
-│   └── Kconfig.projbuild
-├── spiffs/                 # 音频资源文件
-├── partitions.csv
-└── README.md
+```text
+esp32-ai-box/
+├── ai-pet/                 # 小智：独立 ESP-IDF 项目
+├── anti-pet/               # 大神：独立 ESP-IDF 项目
+├── components/             # 两个项目共享的业务、UI、音频和板级组件
+├── assets/                 # 公共字体和 SPIFFS 资源
+├── cmake/                  # 公共构建配置
+├── docs/                   # 详细设计和测试方案
+└── tools/                  # 截图、模拟输入、语音和构建辅助工具
 ```
 
-## 快速开始
+每个项目拥有自己的：
 
-### 1. 环境准备
+- `sdkconfig`：本机配置，包含 Wi-Fi 和 API Key，Git 会忽略它。
+- `sdkconfig.defaults`：该角色的默认配置。
+- `dependencies.lock`：已提交的依赖版本锁。
+- `build/` 和 `managed_components/`：独立构建缓存，Git 会忽略它们。
+
+不要在仓库根目录执行 `idf.py`，也不要在两个项目之间复制整个 `sdkconfig`。
+
+## 环境要求
+
+- ESP-IDF 6.0.1（项目也兼容满足组件要求的 ESP-IDF 5.2+ 环境）。
+- ESP32-S3 开发板和可访问的串口。
+- 首次构建时可访问 Espressif Component Registry。
+- Wi-Fi、聊天模型 API Key，以及使用内置语音网关时的 DashScope API Key。
+
+加载本机 ESP-IDF 环境，例如：
 
 ```bash
-# 设置ESP-IDF环境
-. $HOME/esp/esp-idf/export.sh
+. /home/aladdin/.espressif/v6.0.1/esp-idf/export.sh
 ```
 
-### 2. 配置项目
+如果安装路径不同，请使用本机实际的 `export.sh`。
+
+## 配置和编译 ai-pet
+
+### 1. 进入项目
+
+```bash
+cd ai-pet
+```
+
+### 2. 配置
 
 ```bash
 idf.py menuconfig
 ```
 
-在menuconfig中配置：
-- 选择AI提供商（推荐DeepSeek，国内可用）
-- 设置API密钥
-- 配置WiFi信息
+至少完成以下配置：
 
-### 3. 编译和烧录
+1. `Ai-Box Configuration -> Target board`：选择实际开发板。
+2. `Ai-Box Configuration -> WiFi SSID / WiFi Password`：填写网络信息。
+3. `Ai-Box Configuration -> Default Chat Provider`：选择聊天服务；然后在
+   `Chat Provider Profiles` 填写对应 API Key。
+4. `Ai-Box Configuration -> Voice Configuration -> Voice Gateway`：
+   - 推荐选择 `Embedded on ESP32`；
+   - 填写 DashScope API Key；
+   - 需要 PC/服务器网关时再选择 `External HTTP gateway`。
+5. `Voice Runtime`：确认设备端 WakeNet 已开启。
+
+保存并退出。配置写入 `ai-pet/sdkconfig`。
+
+### 3. 编译
 
 ```bash
 idf.py build
+```
+
+### 4. 烧录并查看日志
+
+```bash
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+### 5. 功能验证
+
+1. 确认屏幕完整显示“小智”界面并连接 Wi-Fi。
+2. 确认串口出现 `WakeNet ready`。
+3. 说“你好，小智”，或点击屏幕会话按钮。
+4. 说一个简短问题。
+5. 确认设备完成 ASR、聊天回复和 TTS 播放，并最终回到空闲状态。
+
+## 配置和编译 anti-pet
+
+### 1. 进入项目
+
+```bash
+cd anti-pet
+```
+
+### 2. 配置
+
+```bash
+idf.py menuconfig
+```
+
+按照与 `ai-pet` 相同的步骤配置板型、Wi-Fi、聊天 API 和 DashScope API。
+默认未启用“你好，大神”WakeNet，因为仓库中尚未包含该自定义模型。
+
+### 3. 编译
+
+```bash
+idf.py build
+```
+
+### 4. 烧录并查看日志
+
+```bash
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-## 配置说明
+### 5. 功能验证
 
-### AI模型配置
+1. 确认屏幕完整显示“大神”界面并连接 Wi-Fi。
+2. 在启动页选择“基准测试”“轻松聊天”“缺陷侦探”或“极限施压”。四种模式各自位于
+   `anti-pet/main/modes/` 的独立模块中，可以分别扩展提示词和行为。
+   轻松聊天每次从话题池随机选择主题；基准测试按顺序轮换固定编号测试集，便于重复对比。
+3. 点击“挑战小智”。首次会话确认大神先说“你好，小智”，然后等待小智回答。
+4. 确认大神的 ASR 识别到小智回复“我在”；只有确认成功后才生成并播报第一句话。
+5. 会话中点击“结束会话”可阻止后续轮次；点击左下角“模式”会结束当前会话并返回模式启动页。
+   如果小智在一个语音采集窗口内保持静默，大神会按当前模式主动换一种说法继续；达到轮数上限后仍会停止。
+6. 如果未听到“我在”，确认界面提示重试，并且大神没有直接开始对话。
+7. 确认设备没有重启，并在结束后回到空闲状态。
 
-可以通过 `idf.py menuconfig` 配置：
+## 双设备闭环测试
 
-- **AI Provider**: 选择OpenAI、智谱AI或DeepSeek
-- **API Key**: 对应服务的API密钥
-- **Base URL**: API基础URL
-- **Model Name**: 模型名称
-- **Max Tokens**: 最大响应token数
-- **Temperature**: 温度参数(0.0-2.0)
+1. 分别烧录 `ai-pet` 和 `anti-pet`。
+2. 将两台设备相对放置，避免扬声器紧贴对方麦克风。
+3. 同时监控 `/dev/ttyACM0` 和 `/dev/ttyUSB0`。
+4. 点击大神的“挑战小智”：首次会话由大神说“你好，小智”，等待小智回复“我在”，
+   握手成功后，大神继续监听，确认小智连续静音后才发出第一条挑战。
+5. 等小智回答完毕后，再启动大神的下一轮挑战；同一次运行中无需重复首次握手。
+6. 大神会自动识别小智的回答并基于上下文继续追问，默认最多自动进行 5 个回复轮次。
+7. 检查上下文、误唤醒、ASR/TTS 失败和设备重启。
 
-### 默认配置
+不要让两个设备无限自动互相触发。测试控制端应限制轮数，并为每轮设置超时。
 
-项目默认配置为DeepSeek，适合中国大陆使用：
+完整方案见 [PC 与 ESP32 音频闭环测试](docs/pc_esp32_audio_loopback_test_plan.md)。
 
-```ini
-AI_PROVIDER: DeepSeek
-BASE_URL: https://api.deepseek.com/v1/chat/completions
-MODEL: deepseek-chat
-```
+## 常用命令
 
-## 调试功能
+在项目目录内：
 
-项目包含一个完整的调试界面，用于测试麦克风和音频播放功能。
-
-### 进入调试界面
-
-1. 启动设备后，在主界面点击"Debug"按钮
-2. 进入调试面板后，可以看到以下功能：
-   - 麦克风实时音量显示
-   - 录音/播放录音测试
-   - 音频播放测试
-
-### 麦克风测试
-
-1. 进入调试界面，点击"Record"按钮开始录音
-2. 对着麦克风说话，观察实时音量条
-3. 再次点击"Record"停止录音
-4. 点击"Play"播放录制的音频
-
-### 音频播放测试
-
-1. 点击"Test Audio"按钮
-2. 系统会播放测试音频（440Hz正弦波，持续1秒）
-3. 观察播放状态变化
-
-### 调试功能API
-
-```c
-// 开始/停止麦克风监控
-audio_debug_start_monitor(void);
-audio_debug_stop_monitor(void);
-
-// 注册音量回调
-audio_register_mic_level_callback(callback);
-
-// 录制样本
-audio_debug_record_sample(&data, &len);
-
-// 播放测试音频
-audio_debug_play_test_audio();
-```
-
-## 扩展新的AI模型
-
-### 1. 创建provider实现
-
-在 `main/components/ai_service/providers/` 下创建新文件：
-
-```c
-// new_provider.c
-#include "ai_service.h"
-
-static esp_err_t new_provider_init(ai_service_t *service, const ai_config_t *config);
-static esp_err_t new_provider_chat(ai_service_t *service, const char *user_message, ai_response_t *response);
-
-ai_service_t* new_provider_service_create(void) {
-    ai_service_t *service = calloc(1, sizeof(ai_service_t));
-    service->init = new_provider_init;
-    service->chat = new_provider_chat;
-    return service;
-}
-```
-
-### 2. 注册provider
-
-在 `ai_service.c` 中添加：
-
-```c
-ai_service_t* create_new_provider_service(void) {
-    return new_provider_service_create();
-}
-
-ai_service_t* ai_service_create(ai_provider_type_t provider) {
-    switch (provider) {
-        case AI_PROVIDER_NEW:
-            return create_new_provider_service();
-        // ...
-    }
-}
-```
-
-### 3. 更新配置
-
-在 `config.h` 和 `Kconfig.projbuild` 中添加新provider选项。
-
-## API密钥获取
-
-### DeepSeek
-- 访问: https://platform.deepseek.com/
-- 注册账号并获取API Key
-- 免费额度充足
-
-### 智谱AI
-- 访问: https://open.bigmodel.cn/
-- 注册并创建API Key
-- 使用GLM-4模型
-
-### OpenAI
-- 访问: https://platform.openai.com/
-- 需要代理才能在中国大陆使用
-
-## 故障排除
-
-### 编译错误
 ```bash
-# 清理构建缓存
+idf.py menuconfig       # 修改当前项目配置
+idf.py build            # 编译当前项目
+idf.py fullclean        # 清理当前项目缓存
+idf.py -p PORT flash    # 烧录
+idf.py -p PORT monitor  # 查看串口日志
+```
+
+也可以从仓库根目录使用：
+
+```bash
+tools/build_target.sh ai-pet build
+tools/build_target.sh ai-pet flash /dev/ttyACM0
+tools/build_target.sh anti-pet build
+tools/build_target.sh anti-pet flash /dev/ttyUSB0
+```
+
+## Agent 操作规范
+
+自动化 Agent 修改或验证本项目时，应按以下顺序执行：
+
+1. 根据任务选择 `ai-pet/` 或 `anti-pet/`，不要从根目录构建。
+2. 不读取、打印或提交 `sdkconfig` 中的 Wi-Fi 密码和 API Key。
+3. 不直接修改 `managed_components/`。
+4. 公共功能放入 `components/`；角色行为只放入对应项目的 `main/app_role.c`。
+5. 板级代码放入 `components/boards/<board>/`，不要用角色判断板型。
+6. 修改公共组件后，分别编译两个项目。
+7. 修改板型或依赖后先执行 `idf.py fullclean`，再重新编译。
+8. 报告实际使用的项目、板型、串口、编译结果和验证结果。
+
+最低交付检查：
+
+```bash
+cd ai-pet && idf.py build
+cd ../anti-pet && idf.py build
+git diff --check
+git status --short
+```
+
+## 调试
+
+- 串口：使用 `idf.py monitor` 查看启动原因、网络、WakeNet、ASR、LLM 和 TTS 状态。
+- 截图：设备联网后运行：
+
+  ```bash
+  python tools/screenshot/screenshot.py <DEVICE_IP> --out /tmp/device.png
+  ```
+
+- 模拟点击：
+
+  ```bash
+  python tools/input/tap.py <DEVICE_IP> tap <X> <Y>
+  ```
+
+默认调试端口为截图 `3333`、模拟触摸 `3334`。
+
+## 常见问题
+
+### `idf.py fullclean` 报 managed_components 被修改
+
+`managed_components/` 是自动生成目录。如果改动不需要，备份错误中指出的具体组件
+目录后重新执行 `fullclean`。如果改动需要保留，应将它迁移为受版本控制的项目组件，
+不能修改 `.component_hash` 或 `CHECKSUMS.json` 绕过检查。
+
+### 修改板型后仍使用旧配置
+
+在对应项目目录执行：
+
+```bash
 idf.py fullclean
+idf.py menuconfig
 idf.py build
 ```
 
-### WiFi连接失败
-- 检查SSID和密码配置
-- 确认ESP32-S3-BOX-3的WiFi工作正常
+### 根目录 sdkconfig 是否生效
 
-### AI请求失败
-- 检查API密钥是否正确
-- 确认网络连接正常
-- 检查API URL配置
+不生效。实际配置是 `ai-pet/sdkconfig` 和 `anti-pet/sdkconfig`。根目录的
+`sdkconfig.defaults.esp32s3*` 是仍需保留的共享默认配置。
 
-## 技术架构
+### “你好，大神”为什么不能直接配置
 
-### 核心模块
+WakeNet 使用声学模型，不是字符串匹配。必须先获得并集成相应模型；当前使用屏幕
+按钮启动大神。详见 [唤醒词更换与模型集成](docs/wake_word_change_plan.md)。
 
-1. **AI服务层** (ai_service)
-   - 统一的AI服务接口
-   - 支持多provider切换
-   - HTTP请求和JSON解析
+## 更多文档
 
-2. **对话管理** (conversation)
-   - 对话历史存储
-   - 上下文管理
-   - 消息队列
-
-3. **配置管理** (config)
-   - NVS持久化存储
-   - 运行时配置
-   - 工厂重置
-
-4. **网络管理** (network)
-   - WiFi连接
-   - 状态回调
-   - 重试机制
-
-5. **UI控制** (ui)
-   - LVGL界面
-   - 面板切换
-   - 消息显示
-
-6. **音频处理** (audio)
-   - 语音识别
-   - TTS播放
-   - 音量控制
-
-## 许可证
-
-CC0-1.0
-
-## 贡献
-
-欢迎提交Issue和Pull Request！
+- [唤醒词更换与模型集成](docs/wake_word_change_plan.md)
+- [PC 与 ESP32 音频闭环测试](docs/pc_esp32_audio_loopback_test_plan.md)
+- [语音聊天技术方案](docs/voice-chat-tts-stt-technical-plan.md)
