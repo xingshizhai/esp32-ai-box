@@ -427,6 +427,30 @@ menu "Ai-Box Configuration"
                 help
                     Silence duration before ending a speech segment.
 
+            config PEER_SILENCE_WAIT_MS
+                int "Peer-device quiet time before speaking (ms)"
+                default 700
+                range 300 5000
+                help
+                    For roles that control another voice device, require this
+                    much continuous quiet before starting local playback.
+
+            config PEER_SILENCE_TIMEOUT_MS
+                int "Peer-device silence wait timeout (ms)"
+                default 15000
+                range 1000 60000
+                help
+                    Give up the turn instead of talking over the peer when no
+                    sufficiently long quiet interval is detected.
+
+            config PEER_SPEECH_LEVEL_THRESHOLD
+                int "Peer-device PCM speech threshold"
+                default 600
+                range 50 10000
+                help
+                    Mean absolute 16-bit PCM level above which the peer is
+                    considered to be speaking. Increase for noisy rooms.
+
             config STT_TIMEOUT_MS
                 int "Default STT timeout (ms)"
                 default 8000

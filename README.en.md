@@ -160,7 +160,8 @@ idf.py -p /dev/ttyUSB0 flash monitor
 2. Place the devices facing each other without putting a speaker directly against a microphone.
 3. Monitor `/dev/ttyACM0` and `/dev/ttyUSB0` at the same time.
 4. Press Shishen's “挑战小智” button. On the first round, Shishen says “你好，小智”,
-   waits for “我在”, and starts its first challenge only after the handshake succeeds.
+   waits for “我在”, then keeps listening and starts its first challenge only after Xiaozhi
+   has remained quiet for the configured interval.
 5. Wait for Xiaozhi to finish before starting the next challenge. The initial handshake is not
    repeated again during the same Shishen runtime.
 6. Run at least five rounds and check context, false wake-ups, ASR/TTS failures, and reboots.

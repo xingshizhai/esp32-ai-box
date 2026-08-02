@@ -106,6 +106,7 @@ static app_runtime_state_t s_runtime = {0};
  * short smart-speaker commands and truncates ordinary sentences; widened to
  * give natural speech room without dragging out short commands too much. */
 #define VOICE_CAPTURE_MS             (7000)
+#define PEER_HANDSHAKE_CAPTURE_MS    (2800)
 #define VOICE_STT_TEXT_MAX           (1024)
 #define VOICE_SESSION_ID_MAX         (64)
 #define PCM_S16LE_BYTES_PER_SAMPLE   (2)
@@ -131,6 +132,18 @@ static app_runtime_state_t s_runtime = {0};
 
 #ifndef CONFIG_LOCAL_WAKEUP_COOLDOWN_MS
 #define CONFIG_LOCAL_WAKEUP_COOLDOWN_MS 2500
+#endif
+
+#ifndef CONFIG_PEER_SILENCE_WAIT_MS
+#define CONFIG_PEER_SILENCE_WAIT_MS 700
+#endif
+
+#ifndef CONFIG_PEER_SILENCE_TIMEOUT_MS
+#define CONFIG_PEER_SILENCE_TIMEOUT_MS 15000
+#endif
+
+#ifndef CONFIG_PEER_SPEECH_LEVEL_THRESHOLD
+#define CONFIG_PEER_SPEECH_LEVEL_THRESHOLD 600
 #endif
 
 #if CONFIG_SDCARD_ENABLED
@@ -1434,7 +1447,8 @@ static esp_err_t app_runtime_capture_peer_reply(char *reply,
     stt_debug_trace_t trace;
 
     app_make_voice_turn_id(session_id, sizeof(session_id));
-    app_stt_debug_trace_init(&trace, session_id, sample_rate_hz, chunk_ms, VOICE_CAPTURE_MS);
+    app_stt_debug_trace_init(&trace, session_id, sample_rate_hz, chunk_ms,
+                             PEER_HANDSHAKE_CAPTURE_MS);
 
     if (voice_session_get_state(&s_runtime.voice_session) != VOICE_STATE_IDLE) {
         (void)voice_session_handle_event(&s_runtime.voice_session,
@@ -1451,7 +1465,7 @@ static esp_err_t app_runtime_capture_peer_reply(char *reply,
     esp_err_t err = app_stream_capture_to_gateway_stt(session_id,
                                                       sample_rate_hz,
                                                       chunk_ms,
-                                                      VOICE_CAPTURE_MS,
+                                                      PEER_HANDSHAKE_CAPTURE_MS,
                                                       &stt_started,
                                                       &trace,
                                                       wake_audio,
@@ -1497,6 +1511,84 @@ done:
     return err;
 }
 
+static esp_err_t app_runtime_wait_for_peer_silence(void)
+{
+    const int sample_rate_hz = 16000;
+    const int frame_ms = 20;
+    const int frame_bytes = sample_rate_hz * frame_ms * PCM_S16LE_BYTES_PER_SAMPLE / 1000;
+    uint8_t *frame = malloc((size_t)frame_bytes);
+    if (frame == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = audio_stream_start_capture();
+    if (err != ESP_OK) {
+        free(frame);
+        return err;
+    }
+
+    const TickType_t started = xTaskGetTickCount();
+    TickType_t quiet_started = 0;
+    int peak_level = 0;
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("等待小智说完...");
+    }
+    ESP_LOGI(TAG,
+             "Peer turn gate started: quiet=%dms timeout=%dms threshold=%d",
+             CONFIG_PEER_SILENCE_WAIT_MS,
+             CONFIG_PEER_SILENCE_TIMEOUT_MS,
+             CONFIG_PEER_SPEECH_LEVEL_THRESHOLD);
+
+    while (app_runtime_elapsed_ms(started, xTaskGetTickCount()) <
+           CONFIG_PEER_SILENCE_TIMEOUT_MS) {
+        int pcm_len = 0;
+        err = audio_stream_read_capture_chunk(frame, frame_bytes, &pcm_len);
+        if (err != ESP_OK) {
+            break;
+        }
+        if (pcm_len <= 0) {
+            continue;
+        }
+
+        const int16_t *samples = (const int16_t *)frame;
+        const int sample_count = pcm_len / PCM_S16LE_BYTES_PER_SAMPLE;
+        int64_t absolute_sum = 0;
+        for (int i = 0; i < sample_count; ++i) {
+            int sample = samples[i];
+            absolute_sum += sample < 0 ? -sample : sample;
+        }
+        int level = sample_count > 0 ? (int)(absolute_sum / sample_count) : 0;
+        if (level > peak_level) {
+            peak_level = level;
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if (level > CONFIG_PEER_SPEECH_LEVEL_THRESHOLD) {
+            quiet_started = 0;
+            continue;
+        }
+        if (quiet_started == 0) {
+            quiet_started = now;
+        }
+        if (app_runtime_elapsed_ms(quiet_started, now) >= CONFIG_PEER_SILENCE_WAIT_MS) {
+            err = ESP_OK;
+            ESP_LOGI(TAG, "Peer turn gate opened after quiet interval (peak_level=%d)", peak_level);
+            goto done;
+        }
+    }
+
+    if (err == ESP_OK) {
+        err = ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGW(TAG, "Peer turn gate timed out or failed: %s peak_level=%d",
+             esp_err_to_name(err), peak_level);
+
+done:
+    (void)audio_stream_stop_capture();
+    free(frame);
+    return err;
+}
+
 static esp_err_t app_runtime_run_role_initiative(void)
 {
     const app_role_profile_t *role = app_role_get();
@@ -1508,10 +1600,44 @@ static esp_err_t app_runtime_run_role_initiative(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Prepare the challenge before waking the peer. Once Xiaozhi says "我在",
+     * its command-listening window is already running, so no cloud AI/TTS
+     * latency may be inserted between the handshake and our playback. */
+    char *assistant_text = calloc(1, AI_MAX_RESPONSE_SIZE);
+    uint8_t *tts_audio = NULL;
+    int tts_len = 0;
+    char session_id[VOICE_SESSION_ID_MAX] = {0};
+    app_config_t *cfg = config_get();
+    esp_err_t err = ESP_OK;
+    if (assistant_text == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("正在准备挑战...");
+    }
+    err = app_runtime_run_chat_turn(role->initiative_prompt,
+                                    assistant_text,
+                                    AI_MAX_RESPONSE_SIZE);
+    if (err != ESP_OK || assistant_text[0] == '\0') {
+        goto done;
+    }
+
+    app_make_voice_turn_id(session_id, sizeof(session_id));
+    err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
+                                       session_id,
+                                       assistant_text,
+                                       cfg->tts_voice_name,
+                                       &tts_audio,
+                                       &tts_len);
+    if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
+        if (err == ESP_OK) err = ESP_FAIL;
+        goto done;
+    }
+
     if (!s_runtime.peer_handshake_confirmed && role->peer_wake_phrase != NULL &&
         role->peer_ready_reply != NULL) {
         char peer_reply[VOICE_STT_TEXT_MAX] = {0};
-        app_config_t *cfg = config_get();
         uint8_t *wake_audio = NULL;
         int wake_audio_len = 0;
         char wake_session_id[VOICE_SESSION_ID_MAX] = {0};
@@ -1528,7 +1654,8 @@ static esp_err_t app_runtime_run_role_initiative(void)
                                                           &wake_audio_len);
         if (wake_err != ESP_OK || wake_audio == NULL || wake_audio_len <= 0) {
             free(wake_audio);
-            return wake_err == ESP_OK ? ESP_FAIL : wake_err;
+            err = wake_err == ESP_OK ? ESP_FAIL : wake_err;
+            goto done;
         }
 
         (void)audio_set_volume(cfg->volume);
@@ -1554,7 +1681,8 @@ static esp_err_t app_runtime_run_role_initiative(void)
             if (s_runtime.ui_ready) {
                 (void)ui_update_status("未听到小智回答，请重试");
             }
-            return ack_err == ESP_OK ? ESP_ERR_NOT_FOUND : ack_err;
+            err = ack_err == ESP_OK ? ESP_ERR_NOT_FOUND : ack_err;
+            goto done;
         }
 
         s_runtime.peer_handshake_confirmed = true;
@@ -1564,35 +1692,16 @@ static esp_err_t app_runtime_run_role_initiative(void)
         }
     }
 
-    char *assistant_text = calloc(1, AI_MAX_RESPONSE_SIZE);
-    uint8_t *tts_audio = NULL;
-    int tts_len = 0;
-    char session_id[VOICE_SESSION_ID_MAX] = {0};
-    if (assistant_text == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    if (s_runtime.ui_ready) {
-        (void)ui_update_status("正在准备挑战...");
-    }
-    esp_err_t err = app_runtime_run_chat_turn(role->initiative_prompt,
-                                               assistant_text,
-                                               AI_MAX_RESPONSE_SIZE);
-    if (err != ESP_OK || assistant_text[0] == '\0') {
-        goto done;
-    }
-
-    app_config_t *cfg = config_get();
-    app_make_voice_turn_id(session_id, sizeof(session_id));
-    err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
-                                       session_id,
-                                       assistant_text,
-                                       cfg->tts_voice_name,
-                                       &tts_audio,
-                                       &tts_len);
-    if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
-        if (err == ESP_OK) err = ESP_FAIL;
-        goto done;
+    /* Check at the last possible moment: silence opens the turn, speech keeps
+     * it closed. The challenge is already buffered, so playback is immediate. */
+    if (role->peer_ready_reply != NULL) {
+        err = app_runtime_wait_for_peer_silence();
+        if (err != ESP_OK) {
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("小智仍在说话，本轮已暂停");
+            }
+            goto done;
+        }
     }
 
     (void)audio_set_volume(cfg->volume);
