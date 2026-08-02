@@ -18,6 +18,8 @@ static const app_role_profile_t kRole = {
     .initiative_prompt =
         "现在主动向AI宠物小智发起一轮新的压力测试。只说一个简短、"
         "具体、能检验事实性或逻辑一致性的问题，不要解释测试目的。",
+    .peer_wake_phrase = "你好，小智",
+    .peer_ready_reply = "我在",
 };
 
 const app_role_profile_t *app_role_get(void) { return &kRole; }

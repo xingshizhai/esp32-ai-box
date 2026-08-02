@@ -17,6 +17,8 @@ static const app_role_profile_t kRole = {
     .main_action_label = "和小智说话",
     .main_action_initiates_speech = false,
     .initiative_prompt = NULL,
+    .peer_wake_phrase = NULL,
+    .peer_ready_reply = NULL,
 };
 
 const app_role_profile_t *app_role_get(void) { return &kRole; }

@@ -60,6 +60,8 @@ extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
  * hardware: playback ended, window opened, VAD fired 190ms later on
  * nothing said, STT came back with a single garbage character). */
 #define CONVERSATION_ECHO_GUARD_MS (900)
+/* The peer may answer almost immediately after our wake phrase. Start ASR
+ * quickly; matching the explicit ready reply rejects our own acoustic tail. */
 
 typedef struct {
     ai_service_t *ai_service;
@@ -78,6 +80,7 @@ typedef struct {
     volatile bool debug_play_req;
     volatile bool voice_round_req;
     volatile bool initiative_req;
+    bool peer_handshake_confirmed;
     TaskHandle_t chat_worker_task;
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
     TaskHandle_t local_wakeup_task;
@@ -1018,7 +1021,9 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
                                                    int chunk_ms,
                                                    int capture_ms,
                                                    bool *out_stt_started,
-                                                   stt_debug_trace_t *trace)
+                                                   stt_debug_trace_t *trace,
+                                                   const uint8_t *playback_audio,
+                                                   int playback_audio_len)
 {
     if (session_id == NULL || sample_rate_hz <= 0) {
         return ESP_ERR_INVALID_ARG;
@@ -1082,6 +1087,16 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
     if (trace != NULL) {
         trace->capture_started = true;
         trace->capture_start_tick = xTaskGetTickCount();
+    }
+
+    if (playback_audio != NULL && playback_audio_len > 0) {
+        err = audio_stream_play_chunk(playback_audio, playback_audio_len);
+        if (err != ESP_OK) {
+            (void)audio_stream_stop_capture();
+            free(chunk_buf);
+            return err;
+        }
+        s_runtime.debug_playback_busy = true;
     }
 
     int total_chunks = (capture_ms + chunk_ms - 1) / chunk_ms;
@@ -1277,7 +1292,9 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
                                                       chunk_ms,
                                                       VOICE_CAPTURE_MS,
                                                       &stt_started,
-                                                      &stt_trace);
+                                                      &stt_trace,
+                                                      NULL,
+                                                      0);
     if (err != ESP_OK) {
         goto fail;
     }
@@ -1400,6 +1417,86 @@ fail:
     return err;
 }
 
+static esp_err_t app_runtime_capture_peer_reply(char *reply,
+                                                size_t reply_size,
+                                                const uint8_t *wake_audio,
+                                                int wake_audio_len)
+{
+    if (reply == NULL || reply_size == 0 || s_runtime.voice_gateway_client == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    app_config_t *cfg = config_get();
+    int sample_rate_hz = (cfg->sampling_rate > 0) ? cfg->sampling_rate : 16000;
+    int chunk_ms = cfg->audio_chunk_ms;
+    char session_id[VOICE_SESSION_ID_MAX] = {0};
+    bool stt_started = false;
+    stt_debug_trace_t trace;
+
+    app_make_voice_turn_id(session_id, sizeof(session_id));
+    app_stt_debug_trace_init(&trace, session_id, sample_rate_hz, chunk_ms, VOICE_CAPTURE_MS);
+
+    if (voice_session_get_state(&s_runtime.voice_session) != VOICE_STATE_IDLE) {
+        (void)voice_session_handle_event(&s_runtime.voice_session,
+                                         VOICE_EVENT_RESET,
+                                         "peer handshake listen");
+    }
+    (void)voice_session_handle_event(&s_runtime.voice_session,
+                                     VOICE_EVENT_START_LISTEN,
+                                     "waiting for peer ready reply");
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("等待小智回答“我在”...");
+    }
+
+    esp_err_t err = app_stream_capture_to_gateway_stt(session_id,
+                                                      sample_rate_hz,
+                                                      chunk_ms,
+                                                      VOICE_CAPTURE_MS,
+                                                      &stt_started,
+                                                      &trace,
+                                                      wake_audio,
+                                                      wake_audio_len);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    (void)voice_session_handle_event(&s_runtime.voice_session,
+                                     VOICE_EVENT_SPEECH_END,
+                                     "peer reply captured");
+    trace.stt_stop_start_tick = xTaskGetTickCount();
+    err = voice_gateway_stt_stop(s_runtime.voice_gateway_client,
+                                 session_id,
+                                 reply,
+                                 (int)reply_size);
+    trace.stt_stop_end_tick = xTaskGetTickCount();
+    stt_started = false;
+    if (err == ESP_OK && reply[0] == '\0') {
+        err = ESP_ERR_NOT_FOUND;
+    }
+
+done:
+    if (stt_started) {
+        char ignored[8] = {0};
+        (void)voice_gateway_stt_stop(s_runtime.voice_gateway_client,
+                                     session_id,
+                                     ignored,
+                                     sizeof(ignored));
+    }
+    if (err != ESP_OK) {
+        (void)audio_stream_stop_capture();
+    }
+    app_stt_debug_trace_log(&trace,
+                            err == ESP_OK ? "peer_ack_ok" : "peer_ack_failed",
+                            err,
+                            err == ESP_OK,
+                            reply);
+    app_stt_debug_trace_deinit(&trace);
+    (void)voice_session_handle_event(&s_runtime.voice_session,
+                                     VOICE_EVENT_RESET,
+                                     "peer handshake capture complete");
+    return err;
+}
+
 static esp_err_t app_runtime_run_role_initiative(void)
 {
     const app_role_profile_t *role = app_role_get();
@@ -1409,6 +1506,62 @@ static esp_err_t app_runtime_run_role_initiative(void)
     if (!network_is_connected() || s_runtime.ai_service == NULL ||
         s_runtime.voice_gateway_client == NULL || s_runtime.debug_playback_busy) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!s_runtime.peer_handshake_confirmed && role->peer_wake_phrase != NULL &&
+        role->peer_ready_reply != NULL) {
+        char peer_reply[VOICE_STT_TEXT_MAX] = {0};
+        app_config_t *cfg = config_get();
+        uint8_t *wake_audio = NULL;
+        int wake_audio_len = 0;
+        char wake_session_id[VOICE_SESSION_ID_MAX] = {0};
+
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("正在唤醒小智...");
+        }
+        app_make_voice_turn_id(wake_session_id, sizeof(wake_session_id));
+        esp_err_t wake_err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
+                                                          wake_session_id,
+                                                          role->peer_wake_phrase,
+                                                          cfg->tts_voice_name,
+                                                          &wake_audio,
+                                                          &wake_audio_len);
+        if (wake_err != ESP_OK || wake_audio == NULL || wake_audio_len <= 0) {
+            free(wake_audio);
+            return wake_err == ESP_OK ? ESP_FAIL : wake_err;
+        }
+
+        (void)audio_set_volume(cfg->volume);
+        ESP_LOGI(TAG,
+                 "Peer handshake starting: role=%s phrase=%s expected_reply=%s",
+                 role->id,
+                 role->peer_wake_phrase,
+                 role->peer_ready_reply);
+        /* Start ASR capture first, then play the wake phrase from inside the
+         * capture loop. This prevents a fast peer reply from arriving while
+         * the ASR WebSocket is still being established. */
+        esp_err_t ack_err = app_runtime_capture_peer_reply(peer_reply,
+                                                           sizeof(peer_reply),
+                                                           wake_audio,
+                                                           wake_audio_len);
+        free(wake_audio);
+        if (ack_err != ESP_OK || strstr(peer_reply, role->peer_ready_reply) == NULL) {
+            ESP_LOGW(TAG,
+                     "Peer handshake not confirmed: expected=%s recognized=%s err=%s",
+                     role->peer_ready_reply,
+                     peer_reply[0] != '\0' ? peer_reply : "<empty>",
+                     esp_err_to_name(ack_err));
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("未听到小智回答，请重试");
+            }
+            return ack_err == ESP_OK ? ESP_ERR_NOT_FOUND : ack_err;
+        }
+
+        s_runtime.peer_handshake_confirmed = true;
+        ESP_LOGI(TAG, "Peer handshake confirmed: reply=%s", peer_reply);
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("小智已唤醒，准备挑战...");
+        }
     }
 
     char *assistant_text = calloc(1, AI_MAX_RESPONSE_SIZE);
@@ -1528,7 +1681,10 @@ static void app_chat_worker_task(void *arg)
             esp_err_t err = app_runtime_run_role_initiative();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Role initiative failed: %s", esp_err_to_name(err));
-                if (s_runtime.ui_ready) {
+                const app_role_profile_t *role = app_role_get();
+                bool handshake_failed = role->peer_ready_reply != NULL &&
+                                        !s_runtime.peer_handshake_confirmed;
+                if (s_runtime.ui_ready && !handshake_failed) {
                     (void)ui_update_status("主动发言失败");
                 }
             }

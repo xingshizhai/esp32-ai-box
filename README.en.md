@@ -26,7 +26,7 @@ Default deployment:
 | Project | Role | Default board | Default port | Start conversation |
 |---|---|---|---|---|
 | `ai-pet` | Xiaozhi | ESP32-S3-BOX-3 | `/dev/ttyACM0` | Say “你好，小智” or press the screen button |
-| `anti-pet` | Shishen | ESP32-S3-LCD-EV-BOARD-2 | `/dev/ttyUSB0` | Press “挑战小智” on the screen |
+| `anti-pet` | Shishen | ESP32-S3-LCD-EV-BOARD-2 | `/dev/ttyUSB0` | Press “挑战小智”; the first round wakes Xiaozhi automatically |
 
 “你好，十神” requires a separately trained WakeNet model. Until that model is integrated,
 Shishen starts conversations from its screen button.
@@ -149,16 +149,20 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 1. Confirm that the complete Shishen screen is visible and Wi-Fi connects.
 2. Press “挑战小智”.
-3. Confirm that Shishen generates and speaks a short stress-test question.
-4. Confirm that the device does not reboot and returns to idle.
+3. On the first round, confirm that Shishen says “你好，小智” and waits for Xiaozhi's reply.
+4. Confirm that Shishen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak a challenge.
+5. If “我在” is not detected, confirm that the UI asks for a retry and no challenge is spoken.
+6. Confirm that the device does not reboot and returns to idle.
 
 ## Two-Device Closed-Loop Test
 
 1. Flash `ai-pet` and `anti-pet` to separate devices.
 2. Place the devices facing each other without putting a speaker directly against a microphone.
 3. Monitor `/dev/ttyACM0` and `/dev/ttyUSB0` at the same time.
-4. Put Xiaozhi into listening mode, then press Shishen's “挑战小智” button.
-5. Wait for Xiaozhi to finish before starting Shishen's next challenge.
+4. Press Shishen's “挑战小智” button. On the first round, Shishen says “你好，小智”,
+   waits for “我在”, and starts its first challenge only after the handshake succeeds.
+5. Wait for Xiaozhi to finish before starting the next challenge. The initial handshake is not
+   repeated again during the same Shishen runtime.
 6. Run at least five rounds and check context, false wake-ups, ASR/TTS failures, and reboots.
 
 Do not allow unlimited automatic triggering. The test controller must enforce a round limit and a timeout per round.

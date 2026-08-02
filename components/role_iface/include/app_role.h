@@ -17,6 +17,9 @@ typedef struct {
     const char *main_action_label;
     bool main_action_initiates_speech;
     const char *initiative_prompt;
+    /* Optional peer-device handshake before the first initiative. */
+    const char *peer_wake_phrase;
+    const char *peer_ready_reply;
 } app_role_profile_t;
 
 /* Role selection is deliberately independent of the board BSP. */
