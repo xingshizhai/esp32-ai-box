@@ -94,12 +94,18 @@ tools/build_target.sh anti-pet flash /dev/ttyUSB0
 ```
 
 两个目录各自保存被 Git 忽略的 `sdkconfig`，因此 Wi-Fi、API Key 和板型配置互不
-覆盖；也各自生成 `build/`、`dependencies.lock` 和 `managed_components/`，所以
-切换角色或板型不会污染另一个项目的缓存。首次构建需要联网下载锁定组件，后续
-构建可复用各自缓存。不要再从仓库根目录运行 `idf.py`；根目录不是 ESP-IDF 项目。
+覆盖；各自的 `dependencies.lock` 已纳入版本控制，并各自生成被 Git 忽略的
+`build/` 和 `managed_components/`。切换角色或板型不会污染另一个项目的缓存。
+首次构建需要联网下载锁定组件，后续构建可复用各自缓存。不要再从仓库根目录运行
+`idf.py`；根目录不是 ESP-IDF 项目。
 
 配置迁移时不要复制整个旧 `sdkconfig` 覆盖另一项目。应分别进入项目运行
 `menuconfig`，或只迁移 Wi-Fi/API 等明确配置；密钥文件均保持 Git 忽略。
+
+根目录不应再保留运行配置 `sdkconfig`、`sdkconfig.old` 或旧的
+`dependencies.lock`；真正生效的是 `ai-pet/sdkconfig` 和 `anti-pet/sdkconfig`。
+根目录的 `sdkconfig.defaults.esp32s3*` 仍需保留，它们是两个项目共享的芯片和板级
+默认配置，不包含本机密钥。
 
 ## 配置说明
 
@@ -424,12 +430,47 @@ ai_service_t* ai_service_create(ai_provider_type_t provider) {
 ## 故障排除
 
 ### 编译错误
+
 ```bash
 # 清理构建缓存
 # 先进入 ai-pet/ 或 anti-pet/
 idf.py fullclean
 idf.py build
 ```
+
+`fullclean` 会清除当前项目的 `build/` 和 `managed_components/`，但不会影响另一个
+项目的缓存，也不会删除当前项目的 `sdkconfig`。
+
+### fullclean 报 managed_components 被修改
+
+`managed_components/` 由 ESP-IDF Component Manager 自动维护，不应直接修改。
+如果出现下面的错误：
+
+```text
+ERROR: Some components in the "managed_components" directory were modified
+```
+
+先根据错误中的组件名确认它是否仍在当前项目的 `dependencies.lock` 中：
+
+```bash
+rg 'espressif/esp-box' dependencies.lock
+```
+
+- 如果是未被依赖锁引用的旧组件，将该**具体组件目录**移动到 `/tmp` 备份，再运行
+  `idf.py fullclean`。例如旧 `espressif__esp-box` 已被当前
+  `espressif__esp-box-3` 替代时：
+
+  ```bash
+  mv managed_components/espressif__esp-box /tmp/espressif__esp-box.backup
+  idf.py fullclean
+  idf.py build
+  ```
+
+- 如果改动仍然需要，不要丢弃。将组件迁移为仓库内受版本控制的公共组件或私有
+  组件，并通过 `idf_component.yml` 的 `override_path` 显式引用，再重新构建。
+
+不要为了绕过校验而修改 `.component_hash` 或 `CHECKSUMS.json`。这会隐藏本地改动，
+导致依赖无法可靠复现。
 
 ### WiFi连接失败
 - 检查SSID和密码配置
