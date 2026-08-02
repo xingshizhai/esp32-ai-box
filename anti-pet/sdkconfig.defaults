@@ -1,0 +1,4 @@
+# Anti-pet starts conversations from its screen button. Enable WakeNet only
+# after a genuine "你好十神" model has been installed.
+# CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP is not set
+CONFIG_MODEL_IN_FLASH=y

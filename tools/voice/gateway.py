@@ -2,7 +2,7 @@
 """Local Voice Gateway for ESP32-AI-Box.
 
 Implements the HTTP contract expected by
-`main/components/voice_chat/voice_gateway_client.c`:
+`components/voice_chat/voice_gateway_client.c`:
 
   POST /v1/stt/start
   POST /v1/stt/chunk?session_id=...

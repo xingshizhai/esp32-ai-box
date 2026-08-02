@@ -1,5 +1,0 @@
-# CONFIG_APP_ROLE_AI_PET is not set
-CONFIG_APP_ROLE_ANTI_AI_PET=y
-# A custom WakeNet model named wn9_nihaoshishen is required for acoustic wake.
-# Until it is installed in the model partition, the screen action remains the
-# supported way for ShiShen to initiate a conversation.

@@ -65,15 +65,11 @@ CONFIG_STT_TIMEOUT_MS=8000
 CONFIG_TTS_TIMEOUT_MS=60000
 CONFIG_AUDIO_CHUNK_MS=200
 
-# On-device wake word: "你好小智" (WakeNet9, 16 kHz mono PCM).
-CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP=y
 CONFIG_LOCAL_WAKEUP_COOLDOWN_MS=2500
-CONFIG_MODEL_IN_FLASH=y
-CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
 
 # GB2312 CJK chat font lives on the "storage" SPIFFS partition (too large for
 # the 2MB app slot). The UI validates its CJKF index and reads individual A2
-# glyphs into a PSRAM LRU cache. See main/components/ui/fonts/cjk_font.c.
+# glyphs into a PSRAM LRU cache. See components/ui/fonts/cjk_font.c.
 CONFIG_LV_USE_FS_POSIX=y
 CONFIG_LV_FS_POSIX_LETTER=83
 CONFIG_LV_FS_POSIX_PATH="/spiffs"

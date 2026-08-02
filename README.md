@@ -1,6 +1,8 @@
-# AI Chat Demo for ESP32-S3-BOX-3
+# ESP32 双 AI 宠物
 
-一个模块化、易扩展的AI聊天机器人项目，支持多种AI模型切换，专门针对中国大陆使用优化。
+同一仓库中的两个独立 ESP-IDF 项目：AI 宠物“小智”和用于主动压力测试的
+反 AI 宠物“十神”。两者共享硬件、语音、AI、UI 和调试组件，但拥有独立的
+`sdkconfig`、构建缓存、固件入口和产品行为。
 
 ## 功能特点
 
@@ -11,32 +13,39 @@
 - **模块化设计**：清晰的架构分层，方便维护和扩展
 - **调试功能**：内置麦克风和音频播放调试界面
 
-## 硬件要求
+## 支持的硬件
 
-- ESP32-S3-BOX-3开发板
-- USB-C数据线
+- ESP32-S3-BOX-3
+- ESP32-S3-LCD-EV-BOARD-2
+- 可通过 `components/boards/custom` 扩展其他板型
+
+角色不由板型决定：两个项目都可以在 menuconfig 中选择任意受支持板型。
 
 ## 项目结构
 
-```
+```text
 .
-│   ├── main.c              # 主程序入口
-│   ├── components/         # 功能模块
-│   │   ├── ai_service/     # AI服务抽象层
-│   │   │   ├── providers/  # 各个AI提供商实现
-│   │   │   │   ├── openai.c    # OpenAI实现
-│   │   │   │   ├── zhipu.c      # 智谱AI实现
-│   │   │   │   └── deepseek.c  # DeepSeek实现
-│   │   ├── conversation/   # 对话历史管理
-│   │   ├── config/         # 配置管理(NVS)
-│   │   ├── network/        # 网络连接管理
-│   │   ├── ui/             # LVGL界面控制
-│   │   └── audio/          # 音频处理
+├── ai-pet/                 # 独立 ESP-IDF 项目：小智
 │   ├── CMakeLists.txt
-│   └── Kconfig.projbuild
-├── spiffs/                 # 音频资源文件
-├── partitions.csv
-└── README.md
+│   ├── main/app_role.c
+│   ├── sdkconfig.defaults
+│   └── partitions.csv
+├── anti-pet/               # 独立 ESP-IDF 项目：十神
+│   ├── CMakeLists.txt
+│   ├── main/app_role.c
+│   ├── sdkconfig.defaults
+│   └── partitions.csv
+├── components/             # 两个项目共同复用
+│   ├── app_core/           # 通用入口、语音运行时、串口调试
+│   ├── boards/             # 板级显示、触摸与音频接线
+│   ├── ai_service/
+│   ├── audio/
+│   ├── conversation/
+│   ├── ui/
+│   └── voice_chat/
+├── assets/                 # 公共 SPIFFS 字体/资源
+├── cmake/                  # 公共 ESP-IDF 项目引导
+└── tools/
 ```
 
 ## 快速开始
@@ -48,10 +57,13 @@
 . $HOME/esp/esp-idf/export.sh
 ```
 
-### 2. 配置项目
+### 2. 配置并编译 AI 宠物
 
 ```bash
+cd ai-pet
 idf.py menuconfig
+idf.py build
+idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 在menuconfig中配置：
@@ -59,34 +71,35 @@ idf.py menuconfig
 - 设置API密钥
 - 配置WiFi信息
 
-### 3. 编译和烧录
+### 3. 配置并编译反 AI 宠物
 
 ```bash
+cd ../anti-pet
+idf.py menuconfig
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-两个产品维度是正交的：`APP_BOARD` 只选择显示、触摸和音频硬件，
-`APP_ROLE` 只选择人格、提示词、唤醒词和主按钮行为。当前双设备目标可独立构建，
-不会因另一块板 menuconfig 的变化而触发全量重配：
+默认部署是 `ai-pet` 使用 BOX-3、`anti-pet` 使用 LCD-EV，但这不是代码约束。
+进入任一项目执行 `idf.py menuconfig`，都可以更换目标板型。切换板型后应执行
+`idf.py fullclean` 再构建。
+
+也可以从仓库根目录使用快捷脚本：
 
 ```bash
-# BOX-3：AI 宠物小智
-tools/build_target.sh box3-ai-pet build
-tools/build_target.sh box3-ai-pet flash /dev/ttyACM0
-
-# LCD-EV：反 AI 宠物十神
-tools/build_target.sh lcd-ev-anti-pet build
-tools/build_target.sh lcd-ev-anti-pet flash /dev/ttyUSB0
-
-# 分别修改目标配置
-tools/build_target.sh box3-ai-pet menuconfig
-tools/build_target.sh lcd-ev-anti-pet menuconfig
+tools/build_target.sh ai-pet build
+tools/build_target.sh ai-pet flash /dev/ttyACM0
+tools/build_target.sh anti-pet build
+tools/build_target.sh anti-pet flash /dev/ttyUSB0
 ```
 
-每个目标首次创建时会从本机已忽略的根 `sdkconfig` 复制 Wi-Fi/API Key，随后保存到
-各自同样被 Git 忽略的 `targets/<target>/sdkconfig`；密钥不会提交。新增板型或角色时，
-分别增加 board BSP 和 role profile，再在该脚本加入目标组合即可，不需要复制项目。
+两个目录各自保存被 Git 忽略的 `sdkconfig`，因此 Wi-Fi、API Key 和板型配置互不
+覆盖；也各自生成 `build/`、`dependencies.lock` 和 `managed_components/`，所以
+切换角色或板型不会污染另一个项目的缓存。首次构建需要联网下载锁定组件，后续
+构建可复用各自缓存。不要再从仓库根目录运行 `idf.py`；根目录不是 ESP-IDF 项目。
+
+配置迁移时不要复制整个旧 `sdkconfig` 覆盖另一项目。应分别进入项目运行
+`menuconfig`，或只迁移 Wi-Fi/API 等明确配置；密钥文件均保持 Git 忽略。
 
 ## 配置说明
 
@@ -116,15 +129,10 @@ MODEL: deepseek-chat
 
 ### 语音唤醒（可选）
 
-触发词更换和模型选择的完整说明见 [ESP32 触发关键词更换方案](docs/wake_word_change_plan.md)。当前设备端 WakeNet 默认使用 `你好小智` 模型；仅修改显示字符串不会改变声学模型。
-
-可在 `menuconfig -> Ai-Box Configuration -> Voice Configuration -> Voice Runtime` 配置：
-
-- `ENABLE_VOICE_WAKEUP`：开启后，STT 文本需先匹配唤醒词才会进入聊天。
-- `VOICE_WAKEUP_WORDS`：逗号分隔的唤醒词列表（示例：`hey box,ok box,xiao zhi`）。
-- `VOICE_WAKEUP_WINDOW_MS`：仅说唤醒词后，下一句在窗口内会被当成问题。
-
-说明：当前实现是“基于 STT 文本的唤醒门控”。即先有 STT 文本，再做唤醒词匹配。
+触发词更换和模型选择的完整说明见 [ESP32 触发关键词更换方案](docs/wake_word_change_plan.md)。
+`ai-pet` 默认启用设备端“你好，小智”WakeNet；`anti-pet` 在真实“你好，十神”
+模型交付前默认关闭 WakeNet，使用屏幕按钮启动主动挑战。仅修改显示字符串不会
+改变声学模型。
 
 #### 生成新的 WakeNet 唤醒词模型
 
@@ -149,17 +157,18 @@ WakeNet 的唤醒词是神经网络模型，不是配置字符串。修改界面
 - [TTS 唤醒词训练/社区申请（ESP-SR issue #88）](https://github.com/espressif/esp-sr/issues/88)
 
 拿到模型后的集成步骤如下。假设官方交付的模型目录名为
-`wn9_nihaoshishen_tts3`：
+`wn9_nihaoshishen_tts3`。每个产品项目维护独立依赖目录，以下操作应在
+`anti-pet/managed_components` 中完成：
 
 ```text
-managed_components/espressif__esp-sr/model/wakenet_model/
+anti-pet/managed_components/espressif__esp-sr/model/wakenet_model/
 └── wn9_nihaoshishen_tts3/
     ├── ...模型文件...
     └── ...模型元数据...
 ```
 
 1. 将**完整交付目录**放到上述 `wakenet_model` 目录。不要改模型内部文件名。
-2. 在 `managed_components/espressif__esp-sr/Kconfig.projbuild` 的 WakeNet 模型
+2. 在 `anti-pet/managed_components/espressif__esp-sr/Kconfig.projbuild` 的 WakeNet 模型
    列表中增加布尔项，例如：
 
    ```kconfig
@@ -182,6 +191,7 @@ managed_components/espressif__esp-sr/model/wakenet_model/
    并烧录全部镜像（不能只烧 app）：
 
    ```bash
+   cd anti-pet
    idf.py fullclean
    idf.py build
    idf.py -p /dev/ttyUSB0 flash
@@ -196,7 +206,7 @@ managed_components/espressif__esp-sr/model/wakenet_model/
 
 ### 语音识别 / 语音合成（千问 / 百炼）
 
-设备侧语音链路通过 **Voice Gateway** 统一对接 ASR/TTS（见 `main/components/voice_chat/`）。云端推荐使用千问/百炼语音能力，官方文档：
+设备侧语音链路通过 **Voice Gateway** 统一对接 ASR/TTS（见 `components/voice_chat/`）。云端推荐使用千问/百炼语音能力，官方文档：
 
 - 实时语音识别（ASR）：https://platform.qianwenai.com/docs/developer-guides/speech/asr-realtime
 - 实时语音合成（TTS）：https://platform.qianwenai.com/docs/developer-guides/speech/realtime-streaming
@@ -225,21 +235,12 @@ ESP32 侧在 `menuconfig -> Voice Configuration -> Voice Gateway` 设置：
 
 网关协议与固件 `voice_gateway_client.c` 对齐：`/v1/stt/start`、`/v1/stt/chunk`、`/v1/stt/stop`、`/v1/tts`。
 
-中文支持说明：
-
-- 可直接在 `VOICE_WAKEUP_WORDS` 配置中文，例如：`小智,你好小智`。
-- 中文按 UTF-8 前缀精确匹配（不做同义词/拼音归一化）。
-- 已支持中文标点与空白分隔，例如：`小智，今天天气如何`、`小智：讲个笑话`。
-- 英文唤醒词仍支持大小写不敏感匹配。
-
 本地离线唤醒说明：
 
 - 可在 `menuconfig -> Ai-Box Configuration -> Voice Configuration -> Voice Runtime` 开启 `ENABLE_LOCAL_OFFLINE_WAKEUP`。
-- 该模式下，设备端会持续采集麦克风并运行 ESP-SR WakeNet 模型，不依赖网络进行唤醒判断；当前默认模型为“你好小智”。
-- 调参项：
-   - `LOCAL_WAKEUP_PEAK_THRESHOLD`：触发阈值（越大越不敏感）
-   - `LOCAL_WAKEUP_SUSTAIN_MS`：持续时长（越大越不易误触）
-   - `LOCAL_WAKEUP_COOLDOWN_MS`：触发冷却时间
+- 该模式下，设备端持续采集麦克风并运行 ESP-SR WakeNet，不依赖网络判断唤醒。
+- 唤醒短语和模型过滤词来自当前产品的 `main/app_role.c`，不是板级配置。
+- `LOCAL_WAKEUP_COOLDOWN_MS` 设置两次有效触发之间的冷却时间。
 - 触发后才进入现有语音轮次（此时 STT/LLM 仍按你当前网关链路执行）。
 
 ## 调试功能
@@ -365,7 +366,7 @@ pip install numpy Pillow
 
 ### 1. 创建provider实现
 
-在 `main/components/ai_service/providers/` 下创建新文件：
+在 `components/ai_service/providers/` 下创建新文件：
 
 ```c
 // new_provider.c
@@ -425,6 +426,7 @@ ai_service_t* ai_service_create(ai_provider_type_t provider) {
 ### 编译错误
 ```bash
 # 清理构建缓存
+# 先进入 ai-pet/ 或 anti-pet/
 idf.py fullclean
 idf.py build
 ```

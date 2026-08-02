@@ -1,9 +1,7 @@
-## IDF Component Manager Manifest File
 dependencies:
-  ## Required IDF version
   idf:
     version: '>=5.2.0'
   espressif/cjson: '*'
   espressif/esp_codec_dev: '*'
-  espressif/esp-sr: '*'
+  espressif/esp-sr: '2.4.7'
   espressif/esp_websocket_client: '^1.8.0'

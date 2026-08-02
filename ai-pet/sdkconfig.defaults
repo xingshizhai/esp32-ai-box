@@ -1,0 +1,4 @@
+# AI pet product defaults. Board defaults are loaded separately.
+CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP=y
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y

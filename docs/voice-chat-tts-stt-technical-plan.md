@@ -14,15 +14,15 @@
 ### 2.1 已有能力
 
 - 已有 AI 服务抽象，包含 chat/stt/tts 接口定义：
-  - `main/components/ai_service/ai_service.h`
-  - `main/components/ai_service/ai_service.c`
+  - `components/ai_service/ai_service.h`
+  - `components/ai_service/ai_service.c`
 - 已有对话管理与 UI 基础流程：
-  - `main/components/conversation`
-  - `main/components/ui`
-  - `main/main.c`
+  - `components/conversation`
+  - `components/ui`
+  - `components/app_core/app_main.c`
 - 已有音频采集与播放能力（ES7210 + ES8311 + I2S）：
-  - `main/components/audio/audio.c`
-  - `main/components/audio/audio.h`
+  - `components/audio/audio.c`
+  - `components/audio/audio.h`
 - 音频基础格式已稳定在 `16kHz / 16bit / PCM` 路径。
 
 ### 2.2 当前缺口
@@ -139,29 +139,29 @@
 
 ### 7.1 现有模块改造
 
-1) `main/components/config`
+1) `components/config`
 - 拆分配置项：`chat_provider`, `stt_provider`, `tts_provider`
 - 新增网关配置：`voice_gateway_url`, `voice_gateway_token`
 - 新增语音参数：`vad_silence_ms`, `stt_timeout_ms`, `tts_timeout_ms`, `enable_barge_in`
 
-2) `main/components/ai_service`
+2) `components/ai_service`
 - chat 继续走现有 provider。
 - STT/TTS 不再强行绑定 chat provider。
 - 新增统一语音服务入口，内部调用 voice client。
 
-3) `main/components/audio`
+3) `components/audio`
 - 保留当前 I2S 与播放队列。
 - 新增“录音分片读取接口”，用于流式 STT 推流。
 - 新增“流式播放写入接口”，用于 TTS 边收边播。
 
-4) `main/main.c`
+4) `components/app_core/app_main.c`
 - 新增语音状态机调度。
 - 替换当前 `stt_callback` 入口为真实语音会话流程。
 - 支持“播报期间打断并回到聆听”。
 
 ### 7.2 建议新增模块
 
-建议新增 `main/components/voice_chat/`：
+建议新增 `components/voice_chat/`：
 - `voice_session.h/.c`
   - 语音状态机
   - 会话生命周期管理
@@ -288,20 +288,20 @@
 ## 14. 与当前代码的落地映射
 
 第一批优先修改文件：
-- `main/components/config/config.h`
-- `main/components/config/config.c`
-- `main/Kconfig.projbuild`
-- `main/main.c`
-- `main/components/audio/audio.h`
-- `main/components/audio/audio.c`
-- `main/components/ai_service/ai_service.h`
-- `main/components/ai_service/ai_service.c`
+- `components/config/config.h`
+- `components/config/config.c`
+- `components/app_core/Kconfig.projbuild`
+- `components/app_core/app_main.c`
+- `components/audio/audio.h`
+- `components/audio/audio.c`
+- `components/ai_service/ai_service.h`
+- `components/ai_service/ai_service.c`
 
 建议新增文件：
-- `main/components/voice_chat/voice_session.h`
-- `main/components/voice_chat/voice_session.c`
-- `main/components/voice_chat/voice_gateway_client.h`
-- `main/components/voice_chat/voice_gateway_client.c`
+- `components/voice_chat/voice_session.h`
+- `components/voice_chat/voice_session.c`
+- `components/voice_chat/voice_gateway_client.h`
+- `components/voice_chat/voice_gateway_client.c`
 
 ---
 

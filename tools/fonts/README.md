@@ -10,7 +10,7 @@ Regenerate the checked-in 14 px asset after changing the source font:
 ```sh
 tools/venv/bin/python tools/fonts/generate_cjk_font.py \
   --font managed_components/lvgl__lvgl/scripts/built_in_font/SourceHanSansSC-Normal.otf \
-  --output main/assets/spiffs_storage/font_zh_gb2312_14.cjkf \
+  --output assets/spiffs_storage/font_zh_gb2312_14.cjkf \
   --size 14
 ```
 

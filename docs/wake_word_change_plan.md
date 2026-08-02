@@ -1,141 +1,94 @@
-# ESP32 触发关键词更换方案
+# ESP32 唤醒词更换与模型集成方案
 
-## 先明确当前实现
+## 当前产品策略
 
-当前固件有两种不同的“唤醒词”机制，不能混为一谈：
+本仓库的角色和板型相互独立，但唤醒词属于产品角色：
 
-1. **本地离线 WakeNet**：真正由 ESP32 麦克风在设备端判断，不依赖网络。当前代码固定加载 `nihaoxiaozhi`，对应“你好小智”模型。
-2. **ASR 文本门控**：先把语音送到 ASR，再对识别出的文字做前缀匹配。这种方式理论上可以支持任意 UTF-8 关键词，但当前仓库的 README 中提到的 `ENABLE_VOICE_WAKEUP` / `VOICE_WAKEUP_WORDS` 并没有出现在当前 Kconfig 配置中，不能直接当作已可用的 menuconfig 功能。
+- `ai-pet/`：角色“小智”，使用 ESP-SR 2.4.7 自带的
+  `wn9_nihaoxiaozhi_tts`，短语为“你好，小智”。
+- `anti-pet/`：角色“十神”，预留模型过滤词 `nihaoshishen`。在拿到真实的
+  “你好，十神”模型前，默认关闭 WakeNet，通过屏幕“挑战小智”按钮主动发言。
 
-因此，想把本地触发词从“你好小智”改成“嗨小智”或“你好盒子”，必须准备对应的 WakeNet 模型；仅修改一个字符串不会改变声学识别模型。
+角色参数分别位于 `ai-pet/main/app_role.c` 和 `anti-pet/main/app_role.c`；公共
+WakeNet 加载、音频采集和状态机位于 `components/app_core/app_runtime.c`。因此
+同一个角色可以换板，不需要修改角色行为；同一块板也可以编译任一角色项目。
 
-## 方案 A：切换 Espressif 已提供的 WakeNet 模型
+WakeNet 是设备端声学模型，不是关键词字符串。修改 `wake_phrase` 只会改变日志
+和界面，修改 `wake_model_filter` 只会选择已经存在的模型，二者都不能生成模型。
 
-适用于“Hi ESP”“小爱同学”“Alexa”等已经存在于 `esp-sr` 模型包中的关键词。
+## “你好，小智”模型的来源
 
-### 步骤
+仓库没有本地训练流水线。“你好，小智”来自锁定版本 `espressif/esp-sr = 2.4.7`
+已经发布的 WakeNet 模型包。它也是通过训练得到的模型，并非应用代码根据文字
+即时生成。因此“你好，十神”可以重新训练，但必须先通过乐鑫的 TTS 社区申请或
+商业定制流程取得模型文件。
 
-1. 执行 `idf.py menuconfig`。
-2. 进入 `Component config → ESP Speech Recognition → WakeNet`。
-3. 只选择一个目标 WakeNet 模型，并关闭当前的 `SR_WN_WN9_NIHAOXIAOZHI_TTS`。
-4. 在代码中把 `main/app_runtime.c` 的模型过滤字符串从：
+官方入口：
 
-   ```c
-   esp_srmodel_filter(models, ESP_WN_PREFIX, "nihaoxiaozhi");
+- [ESP-SR WakeNet 文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/wake_word_engine/README.html)
+- [乐鑫唤醒词定制流程](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/wake_word_engine/ESP_Wake_Words_Customization.html)
+- [TTS 唤醒词社区申请（ESP-SR issue #88）](https://github.com/espressif/esp-sr/issues/88)
+
+原型阶段可向 TTS Pipeline/社区申请提交：唤醒词“你好十神”、普通话、目标芯片
+ESP32-S3、ESP-SR 版本、开源项目地址和用途。量产阶段应联系乐鑫完成真人语料、
+噪声和误唤醒指标的定制与授权确认。
+
+## 集成“你好，十神”模型
+
+假设交付目录名为 `wn9_nihaoshishen_tts3`：
+
+1. 将完整模型目录加入 ESP-SR 的 `model/wakenet_model/`。两个项目有各自的
+   `managed_components/`，长期维护时应将模型制作成受版本控制的私有组件或
+   自动补丁，避免依赖更新后丢失。
+2. 在该 ESP-SR 组件的 `Kconfig.projbuild` 增加模型选项：
+
+   ```kconfig
+   config SR_WN_WN9_NIHAOSHISHEN_TTS3
+       bool "你好十神 (wn9_nihaoshishen_tts3)"
+       default n
    ```
 
-   改为目标模型 ID，例如 `hiesp`、`xiaoaitongxue` 等实际模型名。
-5. 同步修改启动日志和 UI 提示中的“你好小智”，避免调试信息与实际模型不一致。
-6. 编译、烧录，并在串口确认：
+   布尔默认值只能使用 `y` 或 `n`，不能使用 `True`、`False`、`0`、`1`。
+3. 在 `anti-pet/sdkconfig.defaults` 增加：
 
-   ```text
-   WakeNet ready: phrase=<目标词> model=<实际模型名>
+   ```ini
+   CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP=y
+   CONFIG_SR_WN_WN9_NIHAOSHISHEN_TTS3=y
+   ```
+4. 确认 `anti-pet/main/app_role.c` 中的 `wake_model_filter` 能匹配模型目录名；当前
+   已预留为 `nihaoshishen`。
+5. 在 `anti-pet/` 内完整构建并烧录所有分区：
+
+   ```bash
+   cd anti-pet
+   idf.py fullclean
+   idf.py build
+   idf.py -p /dev/ttyUSB0 flash monitor
    ```
 
-### 注意事项
-
-- 以 `build/srmodels` 生成的实际模型清单为准，不要凭显示名称猜模型 ID。
-- 同时选择多个大模型会增加 `model` 分区和 Flash 占用；建议只保留当前使用的一个。
-- WakeNet 词条和 TTS 声音是两套配置，修改唤醒词不会自动修改 TTS voice。
-
-## 方案 B：增加可配置的本地模型 ID 和显示词
-
-这是推荐的固件架构改进，避免每次换词都改 C 源码。
-
-### 新增 menuconfig 配置
-
-建议在 `Voice Runtime` 增加：
+只烧录 app 不够，因为 ESP-SR 会重新生成并烧录 `model` 分区。成功日志应包含：
 
 ```text
-LOCAL_WAKEUP_MODEL_ID     string  默认 nihaoxiaozhi
-LOCAL_WAKEUP_PHRASE       string  默认 你好小智
+WakeNet ready: role=anti_pet phrase=你好，十神 model=<实际模型名>
 ```
 
-运行时使用：
+如果模型缺失，设备应输出 `WakeNet unavailable`；反 AI 宠物的屏幕按钮仍可使用，
+不会因为唤醒模型未交付而阻塞双设备测试。
 
-```c
-esp_srmodel_filter(models, ESP_WN_PREFIX, CONFIG_LOCAL_WAKEUP_MODEL_ID);
-```
+## 切换到 ESP-SR 已有模型
 
-所有日志和 UI 文案使用 `CONFIG_LOCAL_WAKEUP_PHRASE`。启动时检查模型是否存在；不存在时显示明确错误，而不是静默退出唤醒任务。
+如果角色接受“Hi ESP”“小爱同学”等现成词，可在该项目目录运行
+`idf.py menuconfig`，只启用一个目标 WakeNet 模型，并同步修改该项目
+`main/app_role.c` 的 `wake_phrase` 和 `wake_model_filter`。以
+`build/srmodels/` 的实际模型清单和启动日志为准，不要根据显示名猜模型 ID。
 
-### 配置示例
+## 验收标准
 
-```ini
-CONFIG_LOCAL_WAKEUP_MODEL_ID="nihaoxiaozhi"
-CONFIG_LOCAL_WAKEUP_PHRASE="你好小智"
-```
+- 安静环境、背景音乐、多人说话和设备 TTS 回声期间分别测试。
+- 目标词至少说 20 次并统计召回；旧词至少说 20 次验证不再触发。
+- 未联网时目标词仍能触发设备端 WakeNet。
+- 连续运行 30 分钟，无重复触发、内存持续下降、看门狗或重启。
+- 保存 `WakeNet ready/detected`、复位原因、串口日志和现场录音。
 
-切换到已安装模型时只需修改这两项，然后执行：
-
-```bash
-idf.py reconfigure
-idf.py build
-idf.py -p /dev/ttyACM0 flash
-```
-
-## 方案 C：自定义任意关键词
-
-适用于“小智”“你好盒子”“小伙伴”等 `esp-sr` 没有现成模型的词。
-
-### 流程
-
-1. 选择目标词，并固定普通话发音、音节数和允许的变体。
-2. 按 Espressif ESP-SR/WakeNet 的模型训练或定制流程准备正样本、噪声样本、不同说话人和不同距离数据。
-3. 生成与当前 ESP32-S3/ESP-SR 版本兼容的 WakeNet 模型。
-4. 将模型放入 `model` 分区构建输入，并为它定义唯一模型 ID。
-5. 使用方案 B 的 `LOCAL_WAKEUP_MODEL_ID` / `LOCAL_WAKEUP_PHRASE` 选择它。
-6. 在安静、办公室、播放音乐、多人说话四种环境分别测试误唤醒和漏唤醒。
-
-不能用普通 ASR 关键词匹配替代真正的本地唤醒：ASR 方案依赖网络、延迟高，且无法在离线状态可靠工作。
-
-## ASR 文本门控方案（可选补充）
-
-如果产品接受“联网后才判断唤醒词”，可以增加正式 Kconfig：
-
-```text
-ENABLE_VOICE_WAKEUP=y
-VOICE_WAKEUP_WORDS="小智,你好小智,你好盒子"
-VOICE_WAKEUP_WINDOW_MS=8000
-```
-
-实现要求：
-
-- 在 ASR 最终文本上做 UTF-8 前缀匹配。
-- 支持中文标点和空格分隔。
-- 只有匹配唤醒词后才提交 LLM。
-- 唤醒词后带有问题时直接处理，例如“你好小智，讲个笑话”。
-- 只有单独唤醒词时进入短暂的二次聆听窗口。
-- 区分本地 WakeNet 和 ASR 门控的日志标签，便于排查延迟和误触发。
-
-## 更换后的验收测试
-
-### 功能
-
-- 连续说目标词 20 次，统计触发次数。
-- 说旧词 20 次，确认旧词不再触发（若模型确实不同）。
-- 说目标词后立即说问题，确认进入完整 ASR→LLM→TTS 链路。
-- 只说目标词，确认进入二次聆听窗口。
-- 未联网时说目标词，确认本地 WakeNet 仍能触发。
-
-### 稳定性
-
-- 连续运行 30 分钟，观察是否重复触发、任务泄漏或重启。
-- TTS 播放时说目标词，确认 barge-in 行为符合配置。
-- 保存串口中的 `WakeNet ready`、`WakeNet detected`、状态转换和复位原因。
-
-### 通过标准
-
-```text
-target_wake_recall >= 95%
-old_wake_false_trigger = 0  （若使用完全不同模型）
-offline_trigger = PASS
-device_reboot = NO
-```
-
-## 当前项目的建议落地顺序
-
-1. 先保留当前稳定的“你好小智”模型。
-2. 把硬编码模型 ID 和提示词抽成 `LOCAL_WAKEUP_MODEL_ID` / `LOCAL_WAKEUP_PHRASE`。
-3. 再选择 `esp-sr` 已有模型做切换验证。
-4. 产品最终需要“任意中文词”时，再进入自定义 WakeNet 模型训练，不要只改字符串。
+原型建议目标：目标词召回率不低于 95%，旧词零触发，设备零重启。量产指标需用
+更大规模、多说话人和真实噪声数据重新定义。

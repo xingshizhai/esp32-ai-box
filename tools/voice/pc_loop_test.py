@@ -9,7 +9,7 @@ conversation history so later turns can be checked against earlier ones.
 Two-step wake protocol per turn (matches how a human would actually use the
 on-device WakeNet, and avoids racing the device's local "我在" ack against
 the command -- the device has no AEC, so listening must not start until the
-ack has finished playing; see main/app_runtime.c):
+ack has finished playing; see components/app_core/app_runtime.c):
   1. PC speaks the wake phrase ALONE ("你好小智") and confirms via the
      device's serial log that WakeNet fired, retrying a few times before
      giving up (never speaks the query "blind" -- see wake_device()).

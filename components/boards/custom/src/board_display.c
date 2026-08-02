@@ -64,12 +64,12 @@ esp_err_t app_board_get_audio_config(app_board_audio_config_t *config)
 esp_err_t app_display_init(void)
 {
     ESP_LOGW(TAG, "Custom board: app_display_init() is a skeleton — "
-                  "fill in main/components/boards/custom/src/board_display.c");
+                  "fill in components/boards/custom/src/board_display.c");
 
     /* TODO: bring up your I2C bus (if any), LCD panel and touch controller
      * here, following the pattern in
-     * main/components/boards/esp32s3_box3/src/board_display.c or
-     * main/components/boards/esp32s3_lcd_ev_board/src/board_display.c, e.g.:
+     * components/boards/esp32s3_box3/src/board_display.c or
+     * components/boards/esp32s3_lcd_ev_board/src/board_display.c, e.g.:
      *
      *   lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
      *   lvgl_port_init(&lvgl_cfg);
@@ -98,7 +98,7 @@ esp_err_t app_display_init(void)
 void *app_display_get_shared_i2c_bus(void)
 {
     /* TODO: if your display/touch owns an I2C bus that the audio codecs
-     * should also share (see main/components/audio/audio.c), return its
+     * should also share (see components/audio/audio.c), return its
      * i2c_master_bus_handle_t here. Returning NULL (default) makes
      * audio_init() create its own I2C bus from the "Audio Hardware
      * Configuration" Kconfig pins instead. */

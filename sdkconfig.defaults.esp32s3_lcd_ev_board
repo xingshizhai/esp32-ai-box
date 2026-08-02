@@ -1,7 +1,8 @@
 # Board-specific sdkconfig defaults for ESP32-S3-LCD-EV-BOARD-2.
-# Loaded automatically when CONFIG_APP_BOARD_ESP32S3_LCD_EV_BOARD=y (see
-# root CMakeLists.txt). Only applied on fresh sdkconfig creation — run
+# Loaded by the selected product project's shared CMake bootstrap. Only applied
+# on fresh sdkconfig creation — run
 # "idf.py fullclean" after switching boards for this to take effect.
+CONFIG_APP_BOARD_ESP32S3_LCD_EV_BOARD=y
 
 # ── LCD sub-board selection ─────────────────────────────────────────────────
 # Sub-board 3 (default): 4.3" 800x480 RGB (ST7262E43), touch: GT1151
@@ -47,6 +48,6 @@ CONFIG_AUDIO_ES7210_I2C_ADDR=0x41
 
 # The speaker PA enable line on this board is behind the TCA9554 IO-expander,
 # not a raw ESP32 GPIO (see app_display_enable_speaker_amp() in
-# main/components/boards/esp32s3_lcd_ev_board/src/board_display.c). Disable
+# components/boards/esp32s3_lcd_ev_board/src/board_display.c). Disable
 # the audio component's own raw-GPIO PA control.
 CONFIG_AUDIO_PA_GPIO=-1

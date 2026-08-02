@@ -20,7 +20,7 @@
 #include "lwip/inet.h"
 
 /* Access LVGL private display struct to hook flush_cb */
-#include "../../../../managed_components/lvgl__lvgl/src/display/lv_display_private.h"
+#include "src/display/lv_display_private.h"
 
 #define TAG "DBGSHOT"
 

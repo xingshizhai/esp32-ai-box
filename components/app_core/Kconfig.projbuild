@@ -15,23 +15,10 @@ menu "Ai-Box Configuration"
         config APP_BOARD_CUSTOM
             bool "Custom board (user-defined)"
             help
-                Implement main/components/boards/custom/src/board_display.c
+                Implement components/boards/custom/src/board_display.c
                 for your own display/touch hardware. Audio pins are still
                 configured separately below, under "Audio Hardware
                 Configuration".
-    endchoice
-
-    choice APP_ROLE
-        prompt "Device role"
-        default APP_ROLE_AI_PET
-        help
-            Select product behavior independently from the target board.
-            Any role can be built for any supported board.
-
-        config APP_ROLE_AI_PET
-            bool "AI pet - XiaoZhi"
-        config APP_ROLE_ANTI_AI_PET
-            bool "Anti AI pet - ShiShen"
     endchoice
 
     menu "Device Debugging"
@@ -417,7 +404,7 @@ menu "Ai-Box Configuration"
                 help
                     Continuously run Espressif WakeNet on the ESP32-S3.
                     Audio stays on the device until the wake word is detected.
-                    The default model recognizes "你好小智".
+                    The application project selects its required wake model.
 
             config LOCAL_WAKEUP_COOLDOWN_MS
                 int "Wake word cooldown (ms)"
