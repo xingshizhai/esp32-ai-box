@@ -148,11 +148,15 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ### 5. Verify
 
 1. Confirm that the complete Dashen screen is visible and Wi-Fi connects.
-2. Press “挑战小智”.
-3. On the first round, confirm that Dashen says “你好，小智” and waits for Xiaozhi's reply.
-4. Confirm that Dashen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak a challenge.
-5. If “我在” is not detected, confirm that the UI asks for a retry and no challenge is spoken.
-6. Confirm that the device does not reboot and returns to idle.
+2. Choose 基准测试 (benchmark), 轻松聊天 (casual chat), 缺陷侦探 (defect hunter), or
+   极限施压 (pressure test). Each mode is an independent module under `anti-pet/main/modes/`
+   so its prompts and behavior can evolve separately.
+3. Press “挑战小智”. On the first round, confirm that Dashen says “你好，小智” and waits for Xiaozhi's reply.
+4. Confirm that Dashen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak its first turn.
+5. Press “结束会话” to prevent further turns. Press the lower-left “模式” button to stop the
+   current session and return to the mode start screen.
+6. If “我在” is not detected, confirm that the UI asks for a retry and no conversation starts.
+7. Confirm that the device does not reboot and returns to idle.
 
 ## Two-Device Closed-Loop Test
 

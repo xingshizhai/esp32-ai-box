@@ -9,6 +9,7 @@
 #include "storage.h"
 
 #include <string.h>
+#include <stdint.h>
 
 static const char *TAG = "ui";
 
@@ -30,6 +31,7 @@ typedef struct {
     lv_obj_t *action_btn;
     lv_obj_t *action_label;
     lv_obj_t *debug_btn;
+    lv_obj_t *mode_btn;
     lv_obj_t *face;
     lv_obj_t *eye_l;
     lv_obj_t *eye_r;
@@ -46,6 +48,11 @@ static lv_obj_t *s_loading_panel = NULL;
 static lv_obj_t *s_debug_panel = NULL;
 static bool s_ui_initialized = false;
 static ui_main_action_callback_t s_main_action_cb = NULL;
+static ui_main_action_callback_t s_end_session_cb = NULL;
+static ui_main_action_callback_t s_mode_menu_cb = NULL;
+static ui_mode_select_callback_t s_mode_select_cb = NULL;
+static bool s_session_active = false;
+static lv_obj_t *s_mode_panel = NULL;
 static ui_main_view_t s_main_view = {0};
 
 /* Compiled-in font only covers ~90 curated glyphs used by static UI labels.
@@ -274,8 +281,33 @@ static void ui_action_button_event_cb(lv_event_t *event)
         ESP_LOGI(TAG, "Action button event: %s", ui_event_code_to_str(code));
     }
 
-    if (ui_is_activate_event(code) && s_main_action_cb != NULL) {
-        s_main_action_cb();
+    if (ui_is_activate_event(code)) {
+        if (s_session_active && s_end_session_cb != NULL) {
+            s_end_session_cb();
+        } else if (!s_session_active && s_main_action_cb != NULL) {
+            s_main_action_cb();
+        }
+    }
+}
+
+static void ui_mode_button_event_cb(lv_event_t *event)
+{
+    if (!ui_is_activate_event(lv_event_get_code(event))) {
+        return;
+    }
+    int mode_index = (int)(intptr_t)lv_event_get_user_data(event);
+    if (s_mode_panel != NULL) {
+        lv_obj_add_flag(s_mode_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_mode_select_cb != NULL) {
+        s_mode_select_cb(mode_index);
+    }
+}
+
+static void ui_mode_menu_button_event_cb(lv_event_t *event)
+{
+    if (ui_is_activate_event(lv_event_get_code(event)) && s_mode_menu_cb != NULL) {
+        s_mode_menu_cb();
     }
 }
 
@@ -538,6 +570,29 @@ esp_err_t ui_init(void)
     lv_obj_set_style_text_font(debug_label, ui_main_font(), 0);
     lv_obj_center(debug_label);
 
+    s_main_view.mode_btn = lv_btn_create(s_main_panel);
+    if (s_main_view.mode_btn == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_obj_set_size(s_main_view.mode_btn, 48, 28);
+    lv_obj_align(s_main_view.mode_btn, LV_ALIGN_BOTTOM_LEFT, 10, -12);
+    lv_obj_add_event_cb(s_main_view.mode_btn, ui_mode_menu_button_event_cb,
+                        LV_EVENT_ALL, NULL);
+    lv_obj_set_style_bg_color(s_main_view.mode_btn, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_border_width(s_main_view.mode_btn, 1, 0);
+    lv_obj_set_style_border_color(s_main_view.mode_btn, lv_color_hex(0x475569), 0);
+    lv_obj_set_style_radius(s_main_view.mode_btn, 12, 0);
+    lv_obj_add_flag(s_main_view.mode_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *mode_label = lv_label_create(s_main_view.mode_btn);
+    if (mode_label == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    lv_label_set_text(mode_label, "模式");
+    lv_obj_set_style_text_font(mode_label, ui_main_font(), 0);
+    lv_obj_center(mode_label);
+
     s_chat_panel = lv_obj_create(lv_scr_act());
     if (s_chat_panel == NULL) {
         ret = ESP_ERR_NO_MEM;
@@ -708,6 +763,112 @@ esp_err_t ui_update_provider(const char *provider_name)
 esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback)
 {
     s_main_action_cb = callback;
+    return ESP_OK;
+}
+
+esp_err_t ui_set_end_session_callback(ui_main_action_callback_t callback)
+{
+    s_end_session_cb = callback;
+    return ESP_OK;
+}
+
+esp_err_t ui_enable_mode_menu(ui_main_action_callback_t callback)
+{
+    if (!s_ui_initialized || s_main_view.mode_btn == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!lvgl_port_lock(0)) {
+        return ESP_FAIL;
+    }
+    s_mode_menu_cb = callback;
+    if (callback != NULL) {
+        lv_obj_clear_flag(s_main_view.mode_btn, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_main_view.mode_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvgl_port_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ui_set_session_active(bool active, const char *start_label)
+{
+    if (!s_ui_initialized || s_main_view.action_btn == NULL ||
+        s_main_view.action_label == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!lvgl_port_lock(0)) {
+        return ESP_FAIL;
+    }
+    s_session_active = active;
+    lv_label_set_text(s_main_view.action_label,
+                      active ? "结束会话" :
+                      ((start_label != NULL && start_label[0] != '\0') ? start_label : "开始对话"));
+    lv_obj_set_style_bg_color(s_main_view.action_btn,
+                              lv_color_hex(active ? 0xDC2626 : 0x2563EB), 0);
+    lv_obj_set_style_bg_grad_color(s_main_view.action_btn,
+                                   lv_color_hex(active ? 0xF97316 : 0x7C3AED), 0);
+    lvgl_port_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ui_show_mode_selection(const char *title,
+                                 const char *const *labels,
+                                 int count,
+                                 ui_mode_select_callback_t callback)
+{
+    if (!s_ui_initialized || labels == NULL || count <= 0 || count > 4) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!lvgl_port_lock(0)) {
+        return ESP_FAIL;
+    }
+    if (s_mode_panel != NULL) {
+        lv_obj_delete(s_mode_panel);
+        s_mode_panel = NULL;
+    }
+    s_mode_select_cb = callback;
+    s_mode_panel = lv_obj_create(lv_scr_act());
+    if (s_mode_panel == NULL) {
+        lvgl_port_unlock();
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(s_mode_panel, LV_HOR_RES, LV_VER_RES);
+    lv_obj_center(s_mode_panel);
+    lv_obj_clear_flag(s_mode_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(s_mode_panel, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_bg_opa(s_mode_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_mode_panel, 0, 0);
+
+    lv_obj_t *heading = lv_label_create(s_mode_panel);
+    lv_label_set_text(heading, (title != NULL && title[0] != '\0') ? title : "选择模式");
+    lv_obj_set_style_text_font(heading, ui_main_font(), 0);
+    lv_obj_set_style_text_color(heading, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_align(heading, LV_ALIGN_TOP_MID, 0, 14);
+
+    const int button_w = (LV_HOR_RES >= 400) ? 170 : 132;
+    const int button_h = (LV_VER_RES >= 400) ? 64 : 52;
+    const int gap_x = 12;
+    const int gap_y = 12;
+    for (int i = 0; i < count; ++i) {
+        int row = i / 2;
+        int col = i % 2;
+        lv_obj_t *button = lv_btn_create(s_mode_panel);
+        lv_obj_set_size(button, button_w, button_h);
+        lv_obj_align(button, LV_ALIGN_CENTER,
+                     (col == 0 ? -1 : 1) * (button_w + gap_x) / 2,
+                     (row == 0 ? -1 : 1) * (button_h + gap_y) / 2 + 12);
+        lv_obj_set_style_bg_color(button,
+                                  lv_color_hex(i == 3 ? 0x9F1239 : 0x1D4ED8), 0);
+        lv_obj_set_style_radius(button, 12, 0);
+        lv_obj_add_event_cb(button, ui_mode_button_event_cb, LV_EVENT_ALL,
+                            (void *)(intptr_t)i);
+        lv_obj_t *label = lv_label_create(button);
+        lv_label_set_text(label, labels[i]);
+        lv_obj_set_style_text_font(label, ui_main_font(), 0);
+        lv_obj_center(label);
+    }
+    lv_obj_move_foreground(s_mode_panel);
+    lvgl_port_unlock();
     return ESP_OK;
 }
 

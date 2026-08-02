@@ -83,6 +83,9 @@ typedef struct {
     bool peer_handshake_confirmed;
     volatile bool peer_reply_expected;
     int peer_auto_turns;
+    int selected_mode_index;
+    volatile bool session_stop_requested;
+    bool role_session_active;
     TaskHandle_t chat_worker_task;
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
     TaskHandle_t local_wakeup_task;
@@ -233,6 +236,7 @@ static esp_err_t app_runtime_run_role_initiative(void);
 static esp_err_t app_runtime_wait_for_peer_silence(void);
 static esp_err_t app_runtime_initialize_ai_service(void);
 static esp_err_t app_runtime_initialize_voice_gateway_client(void);
+static esp_err_t app_runtime_reset_role_conversation(void);
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
 static void app_local_wakeup_task(void *arg);
 #endif
@@ -247,6 +251,117 @@ static const char *app_skip_text_spaces(const char *s)
         ++s;
     }
     return s;
+}
+
+static const char *app_runtime_tts_voice(const app_config_t *cfg)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (role->tts_voice_name != NULL && role->tts_voice_name[0] != '\0') {
+        return role->tts_voice_name;
+    }
+    return cfg != NULL ? cfg->tts_voice_name : NULL;
+}
+
+static esp_err_t app_runtime_synthesize(const app_config_t *cfg,
+                                        const char *session_id,
+                                        const char *text,
+                                        uint8_t **audio,
+                                        int *audio_len)
+{
+    const char *preferred_voice = app_runtime_tts_voice(cfg);
+    esp_err_t err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
+                                                  session_id,
+                                                  text,
+                                                  preferred_voice,
+                                                  audio,
+                                                  audio_len);
+    const char *fallback_voice = cfg != NULL ? cfg->tts_voice_name : NULL;
+    bool can_fallback = err != ESP_OK && fallback_voice != NULL &&
+                        fallback_voice[0] != '\0' && preferred_voice != NULL &&
+                        strcmp(preferred_voice, fallback_voice) != 0;
+    if (!can_fallback) {
+        return err;
+    }
+
+    ESP_LOGW(TAG, "Role TTS voice '%s' failed; retrying configured voice '%s'",
+             preferred_voice, fallback_voice);
+    free(*audio);
+    *audio = NULL;
+    *audio_len = 0;
+    return voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
+                                        session_id,
+                                        text,
+                                        fallback_voice,
+                                        audio,
+                                        audio_len);
+}
+
+static const app_role_mode_t *app_runtime_selected_mode(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (role->modes == NULL || s_runtime.selected_mode_index < 0 ||
+        s_runtime.selected_mode_index >= role->mode_count) {
+        return NULL;
+    }
+    return &role->modes[s_runtime.selected_mode_index];
+}
+
+static esp_err_t app_runtime_reset_role_conversation(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    const app_role_mode_t *mode = app_runtime_selected_mode();
+    esp_err_t err = conversation_clear(&s_runtime.conversation);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (mode == NULL || mode->system_prompt == NULL) {
+        return conversation_add_message(&s_runtime.conversation, "system", role->system_prompt);
+    }
+    size_t size = strlen(role->system_prompt) + strlen(mode->system_prompt) + 4;
+    char *combined = malloc(size);
+    if (combined == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(combined, size, "%s\n%s", role->system_prompt, mode->system_prompt);
+    err = conversation_add_message(&s_runtime.conversation, "system", combined);
+    free(combined);
+    return err;
+}
+
+static void app_runtime_mode_selected(int mode_index)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (mode_index < 0 || mode_index >= role->mode_count) {
+        return;
+    }
+    s_runtime.selected_mode_index = mode_index;
+    s_runtime.session_stop_requested = false;
+    s_runtime.role_session_active = false;
+    (void)app_runtime_reset_role_conversation();
+    if (s_runtime.ui_ready) {
+        char status[64];
+        snprintf(status, sizeof(status), "已选择：%s", role->modes[mode_index].label);
+        (void)ui_update_status(status);
+        (void)ui_set_session_active(false, role->main_action_label);
+    }
+    ESP_LOGI(TAG, "Role mode selected: %s", role->modes[mode_index].id);
+}
+
+static void app_runtime_show_mode_menu(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (!s_runtime.ui_ready || role->modes == NULL || role->mode_count <= 0) {
+        return;
+    }
+    const char *labels[4] = {0};
+    int count = role->mode_count > 4 ? 4 : role->mode_count;
+    for (int i = 0; i < count; ++i) {
+        labels[i] = role->modes[i].label;
+    }
+    (void)ui_show_mode_selection("大神 · 选择对话模式",
+                                 labels,
+                                 count,
+                                 app_runtime_mode_selected);
 }
 
 #if CONFIG_ENABLE_VOICE_WAKEUP
@@ -1267,6 +1382,9 @@ done:
 
 static esp_err_t app_runtime_run_voice_chat_round(void)
 {
+    if (s_runtime.session_stop_requested) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!network_is_connected()) {
         ESP_LOGW(TAG, "Voice test unavailable: network is disconnected");
         return ESP_ERR_INVALID_STATE;
@@ -1328,6 +1446,10 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     if (err != ESP_OK) {
         goto fail;
     }
+    if (s_runtime.session_stop_requested) {
+        err = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
 
     (void)voice_session_handle_event(&s_runtime.voice_session, VOICE_EVENT_SPEECH_END, "capture done");
     if (s_runtime.ui_ready) {
@@ -1365,6 +1487,10 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
         }
         goto fail;
     }
+    if (s_runtime.session_stop_requested) {
+        err = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
 
     /* Not firing VOICE_EVENT_LLM_READY here: THINKING->SPEAKING already
      * happens below via VOICE_EVENT_TTS_START once synthesis is actually
@@ -1380,12 +1506,8 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
 
     fail_stage = "tts";
-    err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
-                                       session_id,
-                                       assistant_text,
-                                       cfg->tts_voice_name,
-                                       &tts_audio,
-                                       &tts_len);
+    err = app_runtime_synthesize(cfg, session_id, assistant_text,
+                                 &tts_audio, &tts_len);
     if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
         if (err == ESP_OK) {
             err = ESP_FAIL;
@@ -1572,6 +1694,10 @@ static esp_err_t app_runtime_wait_for_peer_silence(void)
 
     while (app_runtime_elapsed_ms(started, xTaskGetTickCount()) <
            CONFIG_PEER_SILENCE_TIMEOUT_MS) {
+        if (s_runtime.session_stop_requested) {
+            err = ESP_ERR_INVALID_STATE;
+            goto done;
+        }
         int pcm_len = 0;
         err = audio_stream_read_capture_chunk(frame, frame_bytes, &pcm_len);
         if (err != ESP_OK) {
@@ -1630,6 +1756,9 @@ static esp_err_t app_runtime_run_role_initiative(void)
         s_runtime.voice_gateway_client == NULL || s_runtime.debug_playback_busy) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_runtime.session_stop_requested) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Prepare the challenge before waking the peer. Once Xiaozhi says "我在",
      * its command-listening window is already running, so no cloud AI/TTS
@@ -1647,7 +1776,11 @@ static esp_err_t app_runtime_run_role_initiative(void)
     if (s_runtime.ui_ready) {
         (void)ui_update_status("正在准备挑战...");
     }
-    err = app_runtime_run_chat_turn(role->initiative_prompt,
+    const app_role_mode_t *mode = app_runtime_selected_mode();
+    const char *initiative_prompt =
+        (mode != NULL && mode->initiative_prompt != NULL) ? mode->initiative_prompt
+                                                          : role->initiative_prompt;
+    err = app_runtime_run_chat_turn(initiative_prompt,
                                     assistant_text,
                                     AI_MAX_RESPONSE_SIZE);
     if (err != ESP_OK || assistant_text[0] == '\0') {
@@ -1655,12 +1788,8 @@ static esp_err_t app_runtime_run_role_initiative(void)
     }
 
     app_make_voice_turn_id(session_id, sizeof(session_id));
-    err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
-                                       session_id,
-                                       assistant_text,
-                                       cfg->tts_voice_name,
-                                       &tts_audio,
-                                       &tts_len);
+    err = app_runtime_synthesize(cfg, session_id, assistant_text,
+                                 &tts_audio, &tts_len);
     if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
         if (err == ESP_OK) err = ESP_FAIL;
         goto done;
@@ -1677,12 +1806,11 @@ static esp_err_t app_runtime_run_role_initiative(void)
             (void)ui_update_status("正在唤醒小智...");
         }
         app_make_voice_turn_id(wake_session_id, sizeof(wake_session_id));
-        esp_err_t wake_err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
-                                                          wake_session_id,
-                                                          role->peer_wake_phrase,
-                                                          cfg->tts_voice_name,
-                                                          &wake_audio,
-                                                          &wake_audio_len);
+        esp_err_t wake_err = app_runtime_synthesize(cfg,
+                                                    wake_session_id,
+                                                    role->peer_wake_phrase,
+                                                    &wake_audio,
+                                                    &wake_audio_len);
         if (wake_err != ESP_OK || wake_audio == NULL || wake_audio_len <= 0) {
             free(wake_audio);
             err = wake_err == ESP_OK ? ESP_FAIL : wake_err;
@@ -1759,6 +1887,9 @@ done:
 static void app_handle_voice_round_request(void)
 {
     s_runtime.is_debug_mode = false;
+    if (s_runtime.session_stop_requested) {
+        return;
+    }
 
     if (!network_is_connected()) {
         ESP_LOGW(TAG, "Voice round skipped: network is disconnected");
@@ -1817,6 +1948,10 @@ static void app_handle_voice_round_request(void)
         (void)ui_update_status(status);
         (void)ui_debug_set_playing_state(false);
         (void)ui_debug_update_status(status);
+        if (role->peer_auto_continue) {
+            s_runtime.role_session_active = false;
+            (void)ui_set_session_active(false, role->main_action_label);
+        }
     }
 }
 
@@ -1836,6 +1971,10 @@ static void app_chat_worker_task(void *arg)
                                         !s_runtime.peer_handshake_confirmed;
                 if (s_runtime.ui_ready && !handshake_failed) {
                     (void)ui_update_status("主动发言失败");
+                }
+                s_runtime.role_session_active = false;
+                if (s_runtime.ui_ready) {
+                    (void)ui_set_session_active(false, role->main_action_label);
                 }
             }
         } else {
@@ -1926,10 +2065,9 @@ static void app_handle_debug_play_request(void)
         app_config_t *cfg = config_get();
         uint8_t *tts_audio = NULL;
         int tts_len = 0;
-        esp_err_t tts_err = voice_gateway_tts_synthesize(
-            s_runtime.voice_gateway_client, "debug_tts_probe",
-            "你好，我是小智。", cfg != NULL ? cfg->tts_voice_name : NULL,
-            &tts_audio, &tts_len);
+        esp_err_t tts_err = app_runtime_synthesize(cfg, "debug_tts_probe",
+                                                    "你好，我是小智。",
+                                                    &tts_audio, &tts_len);
         if (tts_err != ESP_OK) {
             ESP_LOGE(TAG, "Debug TTS probe failed: %s", esp_err_to_name(tts_err));
             free(tts_audio);
@@ -2206,6 +2344,7 @@ static esp_err_t app_runtime_initialize_voice_gateway_client(void)
 
 esp_err_t app_runtime_init(bool ui_ready)
 {
+    s_runtime.selected_mode_index = -1;
     s_runtime.ui_ready = ui_ready;
     s_runtime.last_activity_tick = xTaskGetTickCount();
     s_runtime.screen_dimmed = false;
@@ -2236,6 +2375,10 @@ esp_err_t app_runtime_init(bool ui_ready)
     if (s_runtime.ui_ready) {
         (void)ui_set_role_text(role->title, role->main_action_label);
         (void)ui_update_status(role->idle_status);
+        if (role->modes != NULL && role->mode_count > 0) {
+            (void)ui_enable_mode_menu(app_runtime_request_mode_menu);
+            app_runtime_show_mode_menu();
+        }
     }
 
     err = app_runtime_initialize_ai_service();
@@ -2414,9 +2557,20 @@ void app_runtime_request_main_action(void)
     const app_role_profile_t *role = app_role_get();
     app_runtime_mark_activity();
     if (role->main_action_initiates_speech) {
+        if (role->mode_count > 0 && app_runtime_selected_mode() == NULL) {
+            if (s_runtime.ui_ready) {
+                (void)ui_update_status("请先选择对话模式");
+            }
+            return;
+        }
         if (!s_runtime.initiative_req && !s_runtime.is_processing) {
             s_runtime.peer_auto_turns = 0;
             s_runtime.peer_reply_expected = false;
+            s_runtime.session_stop_requested = false;
+            s_runtime.role_session_active = true;
+            if (s_runtime.ui_ready) {
+                (void)ui_set_session_active(true, role->main_action_label);
+            }
             s_runtime.initiative_req = true;
             if (s_runtime.chat_worker_task != NULL) {
                 (void)xTaskNotifyGive(s_runtime.chat_worker_task);
@@ -2425,6 +2579,44 @@ void app_runtime_request_main_action(void)
         return;
     }
     app_runtime_request_voice_round();
+}
+
+void app_runtime_request_end_session(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    s_runtime.session_stop_requested = true;
+    s_runtime.role_session_active = false;
+    s_runtime.peer_reply_expected = false;
+    s_runtime.voice_round_req = false;
+    s_runtime.initiative_req = false;
+    s_runtime.peer_auto_turns = role->peer_auto_turn_limit;
+    (void)audio_stream_stop_capture();
+    (void)voice_session_handle_event(&s_runtime.voice_session,
+                                     VOICE_EVENT_RESET,
+                                     "session stopped from UI");
+    (void)app_runtime_reset_role_conversation();
+    if (s_runtime.ui_ready) {
+        (void)ui_set_session_active(false, role->main_action_label);
+        (void)ui_update_status("会话已结束，可重新开始");
+    }
+    ESP_LOGI(TAG, "Role session stopped by user");
+}
+
+void app_runtime_request_mode_menu(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (role->modes == NULL || role->mode_count <= 0) {
+        return;
+    }
+    if (s_runtime.role_session_active || s_runtime.is_processing ||
+        s_runtime.initiative_req || s_runtime.peer_reply_expected) {
+        app_runtime_request_end_session();
+    }
+    s_runtime.selected_mode_index = -1;
+    s_runtime.session_stop_requested = false;
+    (void)app_runtime_reset_role_conversation();
+    app_runtime_show_mode_menu();
+    ESP_LOGI(TAG, "Returned to role mode menu");
 }
 
 void app_runtime_request_debug_record(void)
@@ -2566,7 +2758,8 @@ void app_runtime_handle_audio_playback_complete(void)
     }
 
     const app_role_profile_t *role = app_role_get();
-    if (s_runtime.peer_reply_expected && role->peer_auto_continue) {
+    if (s_runtime.peer_reply_expected && role->peer_auto_continue &&
+        !s_runtime.session_stop_requested) {
         s_runtime.peer_reply_expected = false;
         if (s_runtime.peer_auto_turns < role->peer_auto_turn_limit) {
             ++s_runtime.peer_auto_turns;
@@ -2578,6 +2771,14 @@ void app_runtime_handle_audio_playback_complete(void)
                 (void)ui_update_status("等待小智回复...");
             }
             app_runtime_request_voice_round();
+        }
+    }
+    if (role->peer_auto_continue && s_runtime.role_session_active &&
+        s_runtime.peer_auto_turns >= role->peer_auto_turn_limit) {
+        s_runtime.role_session_active = false;
+        if (s_runtime.ui_ready) {
+            (void)ui_set_session_active(false, role->main_action_label);
+            (void)ui_update_status("会话轮次完成");
         }
     }
 

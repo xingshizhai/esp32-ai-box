@@ -8,6 +8,13 @@ extern "C" {
 
 typedef struct {
     const char *id;
+    const char *label;
+    const char *system_prompt;
+    const char *initiative_prompt;
+} app_role_mode_t;
+
+typedef struct {
+    const char *id;
     const char *display_name;
     const char *title;
     const char *system_prompt;
@@ -22,6 +29,9 @@ typedef struct {
     const char *peer_ready_reply;
     bool peer_auto_continue;
     int peer_auto_turn_limit;
+    const char *tts_voice_name;
+    const app_role_mode_t *modes;
+    int mode_count;
 } app_role_profile_t;
 
 /* Role selection is deliberately independent of the board BSP. */

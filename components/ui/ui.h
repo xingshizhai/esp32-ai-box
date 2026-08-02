@@ -18,6 +18,7 @@ typedef enum {
 typedef void (*ui_debug_action_callback_t)(void);
 typedef void (*ui_debug_volume_callback_t)(int volume);
 typedef void (*ui_main_action_callback_t)(void);
+typedef void (*ui_mode_select_callback_t)(int mode_index);
 
 esp_err_t ui_init(void);
 esp_err_t ui_show_panel(ui_panel_t panel);
@@ -26,6 +27,13 @@ esp_err_t ui_update_status(const char *status);
 esp_err_t ui_update_provider(const char *provider_name);
 esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback);
 esp_err_t ui_set_role_text(const char *title, const char *action_label);
+esp_err_t ui_show_mode_selection(const char *title,
+                                 const char *const *labels,
+                                 int count,
+                                 ui_mode_select_callback_t callback);
+esp_err_t ui_set_end_session_callback(ui_main_action_callback_t callback);
+esp_err_t ui_enable_mode_menu(ui_main_action_callback_t callback);
+esp_err_t ui_set_session_active(bool active, const char *start_label);
 void ui_task(void);
 esp_err_t ui_font_run_self_test(void);
 void ui_font_log_stats(void);
