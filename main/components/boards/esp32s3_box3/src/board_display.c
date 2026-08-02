@@ -1,4 +1,5 @@
 #include "app_display.h"
+#include "app_board_audio.h"
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -21,6 +22,26 @@ typedef struct {
 } app_display_state_t;
 
 static app_display_state_t s_display = {0};
+
+esp_err_t app_board_get_audio_config(app_board_audio_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "null audio config");
+    *config = (app_board_audio_config_t) {
+        .i2s_mclk_gpio = BSP_I2S_MCLK,
+        .i2s_bclk_gpio = BSP_I2S_SCLK,
+        .i2s_ws_gpio = BSP_I2S_LCLK,
+        .i2s_dout_gpio = BSP_I2S_DOUT,
+        .i2s_din_gpio = BSP_I2S_DSIN,
+        .codec_i2c_port = 1,
+        .codec_i2c_scl_gpio = BSP_I2C_SCL,
+        .codec_i2c_sda_gpio = BSP_I2C_SDA,
+        .es8311_i2c_addr = 0x18,
+        .es7210_i2c_addr = 0x40,
+        .pa_gpio = BSP_POWER_AMP_IO,
+        .pa_inverted = false,
+    };
+    return ESP_OK;
+}
 
 esp_err_t app_display_init(void)
 {

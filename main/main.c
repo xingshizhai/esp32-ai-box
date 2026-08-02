@@ -83,6 +83,7 @@ static void app_console_print_help(void)
     ESP_LOGI(TAG, "  provider test [prompt]");
     ESP_LOGI(TAG, "  font test");
     ESP_LOGI(TAG, "  font stats");
+    ESP_LOGI(TAG, "  screenshot serial");
 }
 
 static esp_err_t app_console_update_active_provider(const char *api_key,
@@ -144,6 +145,17 @@ static void app_console_handle_line(char *line)
             ui_font_log_stats();
         } else {
             ESP_LOGW(TAG, "Usage: font <test|stats>");
+        }
+        return;
+    }
+
+    if (app_str_ieq(cmd, "screenshot")) {
+        char *sub = strtok(NULL, " \t");
+        if (sub != NULL && app_str_ieq(sub, "serial")) {
+            esp_err_t err = debug_screenshot_dump_serial();
+            if (err != ESP_OK) ESP_LOGE(TAG, "Serial screenshot failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGW(TAG, "Usage: screenshot serial");
         }
         return;
     }

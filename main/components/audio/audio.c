@@ -10,6 +10,7 @@
 #include "esp_codec_dev_defaults.h"
 #include "esp_codec_dev.h"
 #include "sdkconfig.h"
+#include "app_board_audio.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -249,8 +250,11 @@ void audio_set_codec_i2c_bus(void *bus)
 esp_err_t audio_init(void)
 {
     esp_err_t ret = ESP_OK;
-    uint8_t spk_addr = normalize_codec_i2c_addr(CONFIG_AUDIO_ES8311_I2C_ADDR);
-    uint8_t mic_addr = normalize_codec_i2c_addr(CONFIG_AUDIO_ES7210_I2C_ADDR);
+    app_board_audio_config_t hw = {0};
+    ESP_RETURN_ON_ERROR(app_board_get_audio_config(&hw), TAG,
+                        "Board audio configuration unavailable");
+    uint8_t spk_addr = normalize_codec_i2c_addr(hw.es8311_i2c_addr);
+    uint8_t mic_addr = normalize_codec_i2c_addr(hw.es7210_i2c_addr);
 
     if (s_stream_mutex == NULL) {
         s_stream_mutex = xSemaphoreCreateMutex();
@@ -261,15 +265,17 @@ esp_err_t audio_init(void)
     }
 
     ESP_LOGI(TAG, "Codec I2C addr config: ES8311=0x%02X -> 0x%02X, ES7210=0x%02X -> 0x%02X",
-             CONFIG_AUDIO_ES8311_I2C_ADDR, spk_addr,
-             CONFIG_AUDIO_ES7210_I2C_ADDR, mic_addr);
+             hw.es8311_i2c_addr, spk_addr, hw.es7210_i2c_addr, mic_addr);
+    ESP_LOGI(TAG, "Board audio pins: MCLK=%d BCLK=%d WS=%d DOUT=%d DIN=%d PA=%d",
+             hw.i2s_mclk_gpio, hw.i2s_bclk_gpio, hw.i2s_ws_gpio,
+             hw.i2s_dout_gpio, hw.i2s_din_gpio, hw.pa_gpio);
 
     /* 1. I2C bus for codec control ──────────────────────────────────── */
     if (s_codec_i2c_bus == NULL) {
         i2c_master_bus_config_t i2c_cfg = {
-            .i2c_port             = CONFIG_AUDIO_CODEC_I2C_PORT,
-            .sda_io_num           = CONFIG_AUDIO_CODEC_I2C_SDA_GPIO,
-            .scl_io_num           = CONFIG_AUDIO_CODEC_I2C_SCL_GPIO,
+            .i2c_port             = hw.codec_i2c_port,
+            .sda_io_num           = hw.codec_i2c_sda_gpio,
+            .scl_io_num           = hw.codec_i2c_scl_gpio,
             .clk_source           = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt    = 7,
             .flags                = { .enable_internal_pullup = true },
@@ -278,13 +284,12 @@ esp_err_t audio_init(void)
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Codec I2C bus (port %d) init failed: %s – "
                      "if shared with touch, call audio_set_codec_i2c_bus() first",
-                     CONFIG_AUDIO_CODEC_I2C_PORT, esp_err_to_name(ret));
+                     hw.codec_i2c_port, esp_err_to_name(ret));
             return ret;
         }
         s_i2c_bus_owned = true;
         ESP_LOGI(TAG, "Codec I2C bus created on port %d (SCL=%d SDA=%d)",
-                 CONFIG_AUDIO_CODEC_I2C_PORT,
-                 CONFIG_AUDIO_CODEC_I2C_SCL_GPIO, CONFIG_AUDIO_CODEC_I2C_SDA_GPIO);
+                 hw.codec_i2c_port, hw.codec_i2c_scl_gpio, hw.codec_i2c_sda_gpio);
     }
 
     /* 2. I2S channels ───────────────────────────────────────────────── */
@@ -321,10 +326,10 @@ esp_err_t audio_init(void)
             .bit_order_lsb = false,
         },
         .gpio_cfg = {
-            .mclk  = CONFIG_AUDIO_I2S_MCLK_GPIO,
-            .bclk  = CONFIG_AUDIO_I2S_BCLK_GPIO,
-            .ws    = CONFIG_AUDIO_I2S_WS_GPIO,
-            .dout  = CONFIG_AUDIO_I2S_DOUT_GPIO,
+            .mclk  = hw.i2s_mclk_gpio,
+            .bclk  = hw.i2s_bclk_gpio,
+            .ws    = hw.i2s_ws_gpio,
+            .dout  = hw.i2s_dout_gpio,
             .din   = I2S_GPIO_UNUSED,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
@@ -350,11 +355,11 @@ esp_err_t audio_init(void)
             .bit_order_lsb = false,
         },
         .gpio_cfg = {
-            .mclk  = CONFIG_AUDIO_I2S_MCLK_GPIO,
-            .bclk  = CONFIG_AUDIO_I2S_BCLK_GPIO,
-            .ws    = CONFIG_AUDIO_I2S_WS_GPIO,
+            .mclk  = hw.i2s_mclk_gpio,
+            .bclk  = hw.i2s_bclk_gpio,
+            .ws    = hw.i2s_ws_gpio,
             .dout  = I2S_GPIO_UNUSED,
-            .din   = CONFIG_AUDIO_I2S_DIN_GPIO,
+            .din   = hw.i2s_din_gpio,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
@@ -385,7 +390,7 @@ esp_err_t audio_init(void)
 
     /* 6. ES8311 speaker codec ───────────────────────────────────────── */
     audio_codec_i2c_cfg_t spk_i2c = {
-        .port       = CONFIG_AUDIO_CODEC_I2C_PORT,
+        .port       = hw.codec_i2c_port,
         .addr       = spk_addr,
         .bus_handle = s_codec_i2c_bus,
     };
@@ -399,14 +404,10 @@ esp_err_t audio_init(void)
         .ctrl_if        = s_spk_ctrl_if,
         .gpio_if        = s_gpio_if,
         .codec_mode     = ESP_CODEC_DEV_WORK_MODE_DAC,
-        .pa_pin         = (int16_t)CONFIG_AUDIO_PA_GPIO,
-    #ifdef CONFIG_AUDIO_PA_INVERTED
-        .pa_reverted    = true,
-    #else
-        .pa_reverted    = false,
-    #endif
+        .pa_pin         = (int16_t)hw.pa_gpio,
+        .pa_reverted    = hw.pa_inverted,
         .master_mode    = false,
-        .use_mclk       = (CONFIG_AUDIO_I2S_MCLK_GPIO >= 0),
+        .use_mclk       = (hw.i2s_mclk_gpio >= 0),
         .hw_gain        = { .pa_voltage = 5.0f, .codec_dac_voltage = 3.3f },
     };
     s_spk_codec_if = es8311_codec_new(&es8311_cfg);
@@ -428,7 +429,7 @@ esp_err_t audio_init(void)
 
     /* 7. ES7210 microphone codec ─────────────────────────────────────── */
     audio_codec_i2c_cfg_t mic_i2c = {
-        .port       = CONFIG_AUDIO_CODEC_I2C_PORT,
+        .port       = hw.codec_i2c_port,
         .addr       = mic_addr,
         .bus_handle = s_codec_i2c_bus,
     };
@@ -480,14 +481,14 @@ esp_err_t audio_init(void)
     int rc = esp_codec_dev_open(s_spk_dev, &spk_fs);
     if (rc != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "Speaker codec open failed (%d) – check I2C address cfg=0x%02X bus=0x%02X and GPIOs",
-                 rc, CONFIG_AUDIO_ES8311_I2C_ADDR, spk_addr);
+                 rc, hw.es8311_i2c_addr, spk_addr);
         return ESP_FAIL;
     }
 
     rc = esp_codec_dev_open(s_mic_dev, &mic_fs);
     if (rc != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "Mic codec open failed (%d) – check I2C address cfg=0x%02X bus=0x%02X",
-                 rc, CONFIG_AUDIO_ES7210_I2C_ADDR, mic_addr);
+                 rc, hw.es7210_i2c_addr, mic_addr);
         return ESP_FAIL;
     }
 

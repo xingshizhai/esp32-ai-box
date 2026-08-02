@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,12 +24,11 @@
 
 #define TAG "DBGSHOT"
 
-#define LCD_H_RES 320
-#define LCD_V_RES 240
-#define FRAME_BUF_SIZE (LCD_H_RES * LCD_V_RES * 2)
-
 /* Full-screen mirror buffer (allocated in PSRAM) */
 static uint8_t *s_frame_buf = NULL;
+static uint16_t s_frame_width = 0;
+static uint16_t s_frame_height = 0;
+static size_t s_frame_buf_size = 0;
 static SemaphoreHandle_t s_frame_mutex = NULL;
 static lv_display_flush_cb_t s_orig_flush_cb = NULL;
 static TaskHandle_t s_server_task = NULL;
@@ -47,8 +47,8 @@ static void mirror_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 
     int32_t x1 = area->x1 < 0 ? 0 : area->x1;
     int32_t y1 = area->y1 < 0 ? 0 : area->y1;
-    int32_t x2 = area->x2 >= LCD_H_RES ? LCD_H_RES - 1 : area->x2;
-    int32_t y2 = area->y2 >= LCD_V_RES ? LCD_V_RES - 1 : area->y2;
+    int32_t x2 = area->x2 >= s_frame_width ? s_frame_width - 1 : area->x2;
+    int32_t y2 = area->y2 >= s_frame_height ? s_frame_height - 1 : area->y2;
 
     int32_t src_row_w = area->x2 - area->x1 + 1;
     int32_t dst_row_w = x2 - x1 + 1;
@@ -58,8 +58,9 @@ static void mirror_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 
     if (xSemaphoreTake(s_frame_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         for (int32_t r = 0; r < dst_rows; r++) {
-            uint8_t *dst = s_frame_buf + ((y1 + r) * LCD_H_RES + x1) * 2;
-            uint8_t *src = px_map + r * src_row_w * 2;
+            uint8_t *dst = s_frame_buf + ((y1 + r) * s_frame_width + x1) * 2;
+            uint8_t *src = px_map + (((y1 - area->y1) + r) * src_row_w +
+                                     (x1 - area->x1)) * 2;
             memcpy(dst, src, (size_t)(dst_row_w * 2));
         }
         xSemaphoreGive(s_frame_mutex);
@@ -103,24 +104,24 @@ static void handle_client(int sock)
     }
 
     screenshot_header_t hdr = {
-        .w        = LCD_H_RES,
-        .h        = LCD_V_RES,
-        .stride   = LCD_H_RES * 2,
+        .w        = s_frame_width,
+        .h        = s_frame_height,
+        .stride   = s_frame_width * 2,
         .reserved = 0,
-        .data_len = FRAME_BUF_SIZE,
+        .data_len = s_frame_buf_size,
     };
     if (send_all(sock, &hdr, sizeof(hdr)) != ESP_OK) {
         ESP_LOGW(TAG, "header send failed");
         return;
     }
 
-    uint32_t chunk = LCD_H_RES * 16 * 2;
+    uint32_t chunk = s_frame_width * 16 * 2;
     uint8_t *buf = (uint8_t *)malloc(chunk);
     if (!buf) { ESP_LOGW(TAG, "no mem for chunk"); return; }
 
     uint32_t sent = 0;
-    while (sent < FRAME_BUF_SIZE) {
-        uint32_t n = FRAME_BUF_SIZE - sent;
+    while (sent < s_frame_buf_size) {
+        uint32_t n = s_frame_buf_size - sent;
         if (n > chunk) n = chunk;
 
         if (xSemaphoreTake(s_frame_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -138,7 +139,7 @@ static void handle_client(int sock)
         sent += n;
     }
 
-    ESP_LOGI(TAG, "sent %lu / %d bytes", sent, FRAME_BUF_SIZE);
+    ESP_LOGI(TAG, "sent %lu / %u bytes", sent, (unsigned)s_frame_buf_size);
     free(buf);
 }
 
@@ -202,16 +203,25 @@ esp_err_t debug_screenshot_start(void)
         return ESP_OK;
     }
 
+    lv_display_t *disp = lv_display_get_default();
+    if (disp == NULL) return ESP_ERR_INVALID_STATE;
+    s_frame_width = (uint16_t)lv_display_get_horizontal_resolution(disp);
+    s_frame_height = (uint16_t)lv_display_get_vertical_resolution(disp);
+    s_frame_buf_size = (size_t)s_frame_width * s_frame_height * 2;
+    if (s_frame_width == 0 || s_frame_height == 0 || s_frame_buf_size > UINT32_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     /* Allocate mirror buffer in PSRAM */
-    s_frame_buf = (uint8_t *)heap_caps_malloc(FRAME_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_frame_buf = (uint8_t *)heap_caps_malloc(s_frame_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_frame_buf) {
-        s_frame_buf = (uint8_t *)malloc(FRAME_BUF_SIZE);
+        s_frame_buf = (uint8_t *)malloc(s_frame_buf_size);
     }
     if (!s_frame_buf) {
-        ESP_LOGE(TAG, "frame buf alloc failed (%d bytes)", FRAME_BUF_SIZE);
+        ESP_LOGE(TAG, "frame buf alloc failed (%u bytes)", (unsigned)s_frame_buf_size);
         return ESP_ERR_NO_MEM;
     }
-    memset(s_frame_buf, 0, FRAME_BUF_SIZE);
+    memset(s_frame_buf, 0, s_frame_buf_size);
 
     s_frame_mutex = xSemaphoreCreateMutex();
     if (!s_frame_mutex) {
@@ -229,7 +239,6 @@ esp_err_t debug_screenshot_start(void)
 
     /* Hook LVGL flush callback */
     if (lvgl_port_lock(500)) {
-        lv_display_t *disp = lv_display_get_default();
         if (disp) {
             s_orig_flush_cb = disp->flush_cb;
             lv_display_set_flush_cb(disp, mirror_flush_cb);
@@ -258,12 +267,58 @@ esp_err_t debug_screenshot_start(void)
         return s_startup_result;
     }
 
-    ESP_LOGI(TAG, "started (frame buf %d bytes @ %p)", FRAME_BUF_SIZE, (void *)s_frame_buf);
+    ESP_LOGI(TAG, "started (%ux%u, frame buf %u bytes @ %p)",
+             s_frame_width, s_frame_height, (unsigned)s_frame_buf_size, (void *)s_frame_buf);
+    return ESP_OK;
+}
+
+esp_err_t debug_screenshot_dump_serial(void)
+{
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (s_frame_buf == NULL || s_frame_mutex == NULL) return ESP_ERR_INVALID_STATE;
+
+    uint8_t *snapshot = heap_caps_malloc(s_frame_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (snapshot == NULL) snapshot = malloc(s_frame_buf_size);
+    if (snapshot == NULL) return ESP_ERR_NO_MEM;
+    if (xSemaphoreTake(s_frame_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        free(snapshot);
+        return ESP_ERR_TIMEOUT;
+    }
+    memcpy(snapshot, s_frame_buf, s_frame_buf_size);
+    xSemaphoreGive(s_frame_mutex);
+
+    printf("\n<<<LVGLSHOT %u %u %u>>>\n", s_frame_width, s_frame_height,
+           (unsigned)s_frame_buf_size);
+    char line[257];
+    size_t line_len = 0;
+    for (size_t i = 0; i < s_frame_buf_size; i += 3) {
+        uint32_t value = (uint32_t)snapshot[i] << 16;
+        size_t remain = s_frame_buf_size - i;
+        if (remain > 1) value |= (uint32_t)snapshot[i + 1] << 8;
+        if (remain > 2) value |= snapshot[i + 2];
+        line[line_len++] = b64[(value >> 18) & 0x3f];
+        line[line_len++] = b64[(value >> 12) & 0x3f];
+        line[line_len++] = remain > 1 ? b64[(value >> 6) & 0x3f] : '=';
+        line[line_len++] = remain > 2 ? b64[value & 0x3f] : '=';
+        if (line_len == 256) {
+            line[line_len] = '\0';
+            printf("%s\n", line);
+            line_len = 0;
+        }
+    }
+    if (line_len != 0) {
+        line[line_len] = '\0';
+        printf("%s\n", line);
+    }
+    printf("<<<LVGLSHOT END>>>\n");
+    fflush(stdout);
+    free(snapshot);
     return ESP_OK;
 }
 
 #else
 
 esp_err_t debug_screenshot_start(void) { return ESP_OK; }
+esp_err_t debug_screenshot_dump_serial(void) { return ESP_ERR_NOT_SUPPORTED; }
 
 #endif

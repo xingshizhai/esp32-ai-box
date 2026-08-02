@@ -16,6 +16,8 @@
  */
 
 #include "app_display.h"
+#include "app_board_audio.h"
+#include "sdkconfig.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -30,6 +32,30 @@
  */
 
 static const char *TAG = "app_display";
+
+esp_err_t app_board_get_audio_config(app_board_audio_config_t *config)
+{
+    if (config == NULL) return ESP_ERR_INVALID_ARG;
+    *config = (app_board_audio_config_t) {
+        .i2s_mclk_gpio = CONFIG_AUDIO_I2S_MCLK_GPIO,
+        .i2s_bclk_gpio = CONFIG_AUDIO_I2S_BCLK_GPIO,
+        .i2s_ws_gpio = CONFIG_AUDIO_I2S_WS_GPIO,
+        .i2s_dout_gpio = CONFIG_AUDIO_I2S_DOUT_GPIO,
+        .i2s_din_gpio = CONFIG_AUDIO_I2S_DIN_GPIO,
+        .codec_i2c_port = CONFIG_AUDIO_CODEC_I2C_PORT,
+        .codec_i2c_scl_gpio = CONFIG_AUDIO_CODEC_I2C_SCL_GPIO,
+        .codec_i2c_sda_gpio = CONFIG_AUDIO_CODEC_I2C_SDA_GPIO,
+        .es8311_i2c_addr = CONFIG_AUDIO_ES8311_I2C_ADDR,
+        .es7210_i2c_addr = CONFIG_AUDIO_ES7210_I2C_ADDR,
+        .pa_gpio = CONFIG_AUDIO_PA_GPIO,
+#ifdef CONFIG_AUDIO_PA_INVERTED
+        .pa_inverted = true,
+#else
+        .pa_inverted = false,
+#endif
+    };
+    return ESP_OK;
+}
 
 /* TODO: set to your panel's resolution. */
 #define CUSTOM_LCD_H_RES 320
