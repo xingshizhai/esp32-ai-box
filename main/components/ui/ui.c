@@ -1,16 +1,14 @@
 #include "ui.h"
 #include "ui_debug_internal.h"
+#include "cjk_font.h"
 #include "ui_font_zh_14.h"
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "nvs.h"
-#include "nvs_flash.h"
+#include "esp_timer.h"
 #include "storage.h"
 
 #include <string.h>
-#include <sys/stat.h>
 
 static const char *TAG = "ui";
 
@@ -55,101 +53,20 @@ static ui_main_view_t s_main_view = {0};
  * large for the app partition, so it is loaded at runtime from the
  * "storage" SPIFFS partition instead. Falls back to the compiled-in font
  * if the SPIFFS asset is missing or fails to load. */
-static const lv_font_t *s_cjk_font = NULL;
-
-/* lv_binfont_create() crashes (Guru Meditation StoreProhibited, EXCVADDR=0,
- * a NULL-pointer write inside the binfont parser) while parsing
- * font_zh_full_14.bin. CONFIRMED NOT a memory problem: it still crashes with
- * 16.6MB free SPIRAM (logged right before the panic), at both bpp=4 (670KB
- * file) and bpp=2 (403KB file). This is a genuine parsing bug -- most likely
- * a format mismatch between the community `lv_font_conv` (npm, used to
- * generate the .bin) and this LVGL 9.5.0 build's binfont reader, which does
- * not validate the header's format version before trusting offsets/sizes
- * read from the file. xiaozhi-esp32 (github.com/78/xiaozhi-esp32) sidesteps
- * this entirely with its own "cbin_font" format + a forked lv_font_conv
- * (`78/lv_font_conv`) instead of LVGL's stock loader -- that's the credible
- * fix if this is revisited, not further tweaking bpp/compression here.
- *
- * Until then, this stays defensive so the bug degrades to "tofu boxes on
- * uncommon characters" instead of a boot crash loop:
- *   1. NVS "attempted" flag: recorded *before* calling lv_binfont_create,
- *      so if it crashes, the next boot sees the flag and skips straight to
- *      the safe compiled-in 90-glyph fallback instead of looping forever.
- *      Bump CJK_FONT_ATTEMPT_NVS_KEY to force one more attempt after a fix.
- *   2. Free-SPIRAM check before attempting, kept as cheap insurance against
- *      a second, unrelated failure mode even though it didn't cause this
- *      one. */
-#define CJK_FONT_NVS_NAMESPACE   "ui_font"
-#define CJK_FONT_ATTEMPT_NVS_KEY "cjk_try_v4"
-#define CJK_FONT_MIN_FREE_MULTIPLIER (4)
-
-static bool ui_cjk_font_already_attempted(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(CJK_FONT_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
-        return false;
-    }
-    uint8_t done = 0;
-    esp_err_t err = nvs_get_u8(h, CJK_FONT_ATTEMPT_NVS_KEY, &done);
-    nvs_close(h);
-    return (err == ESP_OK) && (done != 0);
-}
-
-static void ui_cjk_font_mark_attempted(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(CJK_FONT_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
-        return;
-    }
-    (void)nvs_set_u8(h, CJK_FONT_ATTEMPT_NVS_KEY, 1);
-    (void)nvs_commit(h);
-    nvs_close(h);
-}
+static lv_font_t *s_cjk_font = NULL;
 
 static void ui_load_cjk_font(void)
 {
-    if (ui_cjk_font_already_attempted()) {
-        ESP_LOGW(TAG, "CJK font: skipping (already attempted this build; "
-                       "previous attempt may have crashed), using built-in fallback font");
-        return;
-    }
-
     if (storage_spiffs_mount() != ESP_OK) {
         ESP_LOGW(TAG, "CJK font: SPIFFS unavailable, using built-in fallback font");
         return;
     }
-
-    struct stat st;
-    if (stat("/spiffs/font_zh_full_14.bin", &st) != 0) {
-        ESP_LOGW(TAG, "CJK font: asset missing on SPIFFS, using built-in fallback font");
+    s_cjk_font = cjk_font_create("/spiffs/font_zh_gb2312_14.cjkf", &ui_font_zh_14);
+    if (s_cjk_font == NULL) {
+        ESP_LOGW(TAG, "CJK font: CJKF asset unavailable/invalid, using built-in fallback font");
         return;
     }
-
-    size_t free_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t required = (size_t)st.st_size * CJK_FONT_MIN_FREE_MULTIPLIER;
-    if (free_spiram < required) {
-        ESP_LOGW(TAG,
-                 "CJK font: only %u bytes free SPIRAM (want >=%u for a %ld-byte font), "
-                 "using built-in fallback font to avoid a risky allocation",
-                 (unsigned)free_spiram, (unsigned)required, (long)st.st_size);
-        return;
-    }
-
-    /* Record the attempt BEFORE the risky call so a crash here doesn't
-     * repeat on the next boot. */
-    ui_cjk_font_mark_attempted();
-
-    ESP_LOGW(TAG, "CJK font: attempting lv_binfont_create (file=%ld bytes, free_spiram=%u)",
-             (long)st.st_size, (unsigned)free_spiram);
-
-    lv_font_t *font = lv_binfont_create("S:/font_zh_full_14.bin");
-    if (font == NULL) {
-        ESP_LOGW(TAG, "CJK font: failed to load font_zh_full_14.bin, using built-in fallback font");
-        return;
-    }
-
-    s_cjk_font = font;
-    ESP_LOGI(TAG, "CJK font: loaded full-coverage font from SPIFFS");
+    ESP_LOGI(TAG, "CJK font: GB2312 on-demand font ready");
 }
 
 static const lv_font_t *ui_main_font(void)
@@ -794,8 +711,26 @@ esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback)
     return ESP_OK;
 }
 
+esp_err_t ui_font_run_self_test(void)
+{
+    if (!s_ui_initialized || !s_cjk_font) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = ui_update_chat_message(
+        "你好，小智！中文显示测试：春夏秋冬，东南西北。",
+        "常用汉字覆盖验证：人工智能聊天伴侣已经准备好了。"
+        "数字 123，标点：，。！？；【】《》");
+    if (err == ESP_OK) err = ui_show_panel(UI_PANEL_CHAT);
+    ESP_LOGI(TAG, "CJK font self-test: %s", esp_err_to_name(err));
+    return err;
+}
+
+void ui_font_log_stats(void)
+{
+    cjk_font_log_stats(s_cjk_font);
+}
+
 void ui_task(void)
 {
+    static int64_t last_font_stats_us;
     if (!s_ui_initialized) {
         return;
     }
@@ -803,5 +738,10 @@ void ui_task(void)
     if (lvgl_port_lock(0)) {
         lv_task_handler();
         lvgl_port_unlock();
+    }
+    int64_t now = esp_timer_get_time();
+    if (s_cjk_font && now - last_font_stats_us >= 60000000) {
+        cjk_font_log_stats(s_cjk_font);
+        last_font_stats_us = now;
     }
 }

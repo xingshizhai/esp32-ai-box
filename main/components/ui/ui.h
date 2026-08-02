@@ -26,6 +26,8 @@ esp_err_t ui_update_status(const char *status);
 esp_err_t ui_update_provider(const char *provider_name);
 esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback);
 void ui_task(void);
+esp_err_t ui_font_run_self_test(void);
+void ui_font_log_stats(void);
 
 esp_err_t ui_debug_update_mic_level(int level);
 esp_err_t ui_debug_update_status(const char *status);

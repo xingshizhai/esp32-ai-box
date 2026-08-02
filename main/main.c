@@ -81,6 +81,8 @@ static void app_console_print_help(void)
     ESP_LOGI(TAG, "  provider referer set <value>");
     ESP_LOGI(TAG, "  provider title set <value>");
     ESP_LOGI(TAG, "  provider test [prompt]");
+    ESP_LOGI(TAG, "  font test");
+    ESP_LOGI(TAG, "  font stats");
 }
 
 static esp_err_t app_console_update_active_provider(const char *api_key,
@@ -130,6 +132,19 @@ static void app_console_handle_line(char *line)
 
     if (app_str_ieq(cmd, "help")) {
         app_console_print_help();
+        return;
+    }
+
+    if (app_str_ieq(cmd, "font")) {
+        char *sub = strtok(NULL, " \t");
+        if (sub != NULL && app_str_ieq(sub, "test")) {
+            esp_err_t err = ui_font_run_self_test();
+            if (err != ESP_OK) ESP_LOGE(TAG, "Font self-test failed: %s", esp_err_to_name(err));
+        } else if (sub != NULL && app_str_ieq(sub, "stats")) {
+            ui_font_log_stats();
+        } else {
+            ESP_LOGW(TAG, "Usage: font <test|stats>");
+        }
         return;
     }
 
