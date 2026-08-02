@@ -62,6 +62,8 @@ managed_components
 DEBUG_GUIDE.md
 sdkconfig
 sdkconfig.old
+targets/*/sdkconfig
+targets/*/sdkconfig.old
 tmp
 
 # Local ESP-IDF machine config (copy from idf-env.example.*)
@@ -77,4 +79,3 @@ tools/venv/
 tools/screenshot/screenshots/
 tools/**/__pycache__/
 *.png
-

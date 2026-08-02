@@ -29,6 +29,13 @@ endif()
 
 message(STATUS "APP_BOARD = ${APP_BOARD}")
 
+# Role is orthogonal to the board. APP_ROLE only selects behavioral defaults;
+# board components must never branch on it.
+if(NOT DEFINED APP_ROLE)
+    set(APP_ROLE "ai_pet")
+endif()
+message(STATUS "APP_ROLE = ${APP_ROLE}")
+
 # ── sdkconfig defaults (stacked, last file wins; each only added if present) ─
 set(SDKCONFIG_DEFAULTS "")
 foreach(_defaults "sdkconfig.defaults" "sdkconfig.defaults.esp32s3" "sdkconfig.defaults.${APP_BOARD}")
@@ -36,6 +43,9 @@ foreach(_defaults "sdkconfig.defaults" "sdkconfig.defaults.esp32s3" "sdkconfig.d
         list(APPEND SDKCONFIG_DEFAULTS "${_defaults}")
     endif()
 endforeach()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.role.${APP_ROLE}")
+    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.defaults.role.${APP_ROLE}")
+endif()
 
 # ── Component paths ──────────────────────────────────────────────────────────
 set(EXTRA_COMPONENT_DIRS

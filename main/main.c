@@ -399,7 +399,7 @@ void app_main(void)
         ESP_LOGW(TAG, "UI initialization failed: %s, continuing without UI", esp_err_to_name(err));
     } else {
         ui_ready = true;
-        (void)ui_set_main_action_callback(app_runtime_request_voice_round);
+        (void)ui_set_main_action_callback(app_runtime_request_main_action);
         (void)ui_debug_set_record_action_callback(app_runtime_request_debug_record);
         (void)ui_debug_set_play_record_action_callback(app_runtime_request_debug_play_record);
         (void)ui_debug_set_play_action_callback(app_runtime_request_debug_play);

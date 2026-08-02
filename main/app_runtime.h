@@ -17,6 +17,7 @@ esp_err_t app_runtime_reload_ai_service(void);
 esp_err_t app_runtime_test_chat(const char *prompt);
 
 void app_runtime_request_voice_round(void);
+void app_runtime_request_main_action(void);
 void app_runtime_request_debug_record(void);
 void app_runtime_request_debug_play_record(void);
 void app_runtime_request_debug_play(void);

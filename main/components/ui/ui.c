@@ -711,6 +711,25 @@ esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback)
     return ESP_OK;
 }
 
+esp_err_t ui_set_role_text(const char *title, const char *action_label)
+{
+    if (!s_ui_initialized || s_main_view.title_label == NULL ||
+        s_main_view.action_label == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!lvgl_port_lock(0)) {
+        return ESP_FAIL;
+    }
+    if (title != NULL && title[0] != '\0') {
+        lv_label_set_text(s_main_view.title_label, title);
+    }
+    if (action_label != NULL && action_label[0] != '\0') {
+        lv_label_set_text(s_main_view.action_label, action_label);
+    }
+    lvgl_port_unlock();
+    return ESP_OK;
+}
+
 esp_err_t ui_font_run_self_test(void)
 {
     if (!s_ui_initialized || !s_cjk_font) return ESP_ERR_INVALID_STATE;

@@ -66,6 +66,28 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
+两个产品维度是正交的：`APP_BOARD` 只选择显示、触摸和音频硬件，
+`APP_ROLE` 只选择人格、提示词、唤醒词和主按钮行为。当前双设备目标可独立构建，
+不会因另一块板 menuconfig 的变化而触发全量重配：
+
+```bash
+# BOX-3：AI 宠物小智
+tools/build_target.sh box3-ai-pet build
+tools/build_target.sh box3-ai-pet flash /dev/ttyACM0
+
+# LCD-EV：反 AI 宠物十神
+tools/build_target.sh lcd-ev-anti-pet build
+tools/build_target.sh lcd-ev-anti-pet flash /dev/ttyUSB0
+
+# 分别修改目标配置
+tools/build_target.sh box3-ai-pet menuconfig
+tools/build_target.sh lcd-ev-anti-pet menuconfig
+```
+
+每个目标首次创建时会从本机已忽略的根 `sdkconfig` 复制 Wi-Fi/API Key，随后保存到
+各自同样被 Git 忽略的 `targets/<target>/sdkconfig`；密钥不会提交。新增板型或角色时，
+分别增加 board BSP 和 role profile，再在该脚本加入目标组合即可，不需要复制项目。
+
 ## 配置说明
 
 ### AI模型配置
@@ -103,6 +125,74 @@ MODEL: deepseek-chat
 - `VOICE_WAKEUP_WINDOW_MS`：仅说唤醒词后，下一句在窗口内会被当成问题。
 
 说明：当前实现是“基于 STT 文本的唤醒门控”。即先有 STT 文本，再做唤醒词匹配。
+
+#### 生成新的 WakeNet 唤醒词模型
+
+WakeNet 的唤醒词是神经网络模型，不是配置字符串。修改界面文字、
+`wake_phrase` 或 `esp_srmodel_filter()` 的过滤词，都不会让设备学会一个新词。
+以“你好，十神”为例，必须先得到包含该词的 WakeNet 模型。
+
+官方目前提供两条路径：
+
+1. **开源项目 / TTS 训练路径**：在 ESP-SR 的唤醒词征集 issue 提交词语、
+   项目链接和用途，或按该页最新的 TTS Pipeline 流程申请生成模型。官方说明
+   TTS Pipeline V3 已支持中文、英文、日文和法文。社区模型适合原型验证，仍需
+   在真实设备上测误唤醒率和召回率。
+2. **量产定制路径**：联系乐鑫销售定制。官方文档说明可由客户提供语料，或由
+   乐鑫提供语料并训练；高质量真人语料方案通常需要收费和数周时间。量产产品
+   应优先采用这条路径并完成噪声、距离、男女声和儿童声测试。
+
+官方入口：
+
+- [ESP-SR WakeNet 文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/wake_word_engine/README.html)
+- [乐鑫语音唤醒方案客户定制流程](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/wake_word_engine/ESP_Wake_Words_Customization.html)
+- [TTS 唤醒词训练/社区申请（ESP-SR issue #88）](https://github.com/espressif/esp-sr/issues/88)
+
+拿到模型后的集成步骤如下。假设官方交付的模型目录名为
+`wn9_nihaoshishen_tts3`：
+
+```text
+managed_components/espressif__esp-sr/model/wakenet_model/
+└── wn9_nihaoshishen_tts3/
+    ├── ...模型文件...
+    └── ...模型元数据...
+```
+
+1. 将**完整交付目录**放到上述 `wakenet_model` 目录。不要改模型内部文件名。
+2. 在 `managed_components/espressif__esp-sr/Kconfig.projbuild` 的 WakeNet 模型
+   列表中增加布尔项，例如：
+
+   ```kconfig
+   config SR_WN_WN9_NIHAOSHISHEN_TTS3
+       bool "你好十神 (wn9_nihaoshishen_tts3)"
+       default n
+   ```
+
+   布尔默认值只能写 `y` 或 `n`，不能写 `True`、`False`、`0` 或 `1`。
+3. 在十神目标的 sdkconfig/defaults 中启用它：
+
+   ```ini
+   CONFIG_SR_WN_WN9_NIHAOSHISHEN_TTS3=y
+   ```
+
+4. 让角色的 `wake_model_filter` 与模型目录的可识别部分一致。本项目十神角色已
+   预留 `nihaoshishen`；运行时会从 `model` 分区查找对应模型。找不到时会在
+   串口明确输出 `WakeNet unavailable`，屏幕按钮仍可启动十神主动发言。
+5. 模型分区由 ESP-SR 构建脚本根据 Kconfig 重新生成，因此必须执行一次干净构建
+   并烧录全部镜像（不能只烧 app）：
+
+   ```bash
+   idf.py fullclean
+   idf.py build
+   idf.py -p /dev/ttyUSB0 flash
+   ```
+
+6. 从串口确认日志包含 `WakeNet ready`、目标短语和目标模型名，再用真人录音做
+   至少三类回归：安静环境召回、扬声器回声期间不误触、数小时背景音误唤醒。
+
+注意：`managed_components` 通常由依赖管理器重新生成，直接修改其中的 Kconfig
+可能在更新依赖后丢失。产品化时应把定制模型做成受版本控制的私有组件或补丁，
+并固定 `espressif/esp-sr` 版本；不要把有授权限制的模型公开提交到仓库。
 
 ### 语音识别 / 语音合成（千问 / 百炼）
 

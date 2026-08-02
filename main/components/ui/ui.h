@@ -25,6 +25,7 @@ esp_err_t ui_update_chat_message(const char *user_msg, const char *ai_msg);
 esp_err_t ui_update_status(const char *status);
 esp_err_t ui_update_provider(const char *provider_name);
 esp_err_t ui_set_main_action_callback(ui_main_action_callback_t callback);
+esp_err_t ui_set_role_text(const char *title, const char *action_label);
 void ui_task(void);
 esp_err_t ui_font_run_self_test(void);
 void ui_font_log_stats(void);

@@ -21,6 +21,19 @@ menu "Ai-Box Configuration"
                 Configuration".
     endchoice
 
+    choice APP_ROLE
+        prompt "Device role"
+        default APP_ROLE_AI_PET
+        help
+            Select product behavior independently from the target board.
+            Any role can be built for any supported board.
+
+        config APP_ROLE_AI_PET
+            bool "AI pet - XiaoZhi"
+        config APP_ROLE_ANTI_AI_PET
+            bool "Anti AI pet - ShiShen"
+    endchoice
+
     menu "Device Debugging"
 
         config UI_DEBUG_SCREENSHOT_ENABLED

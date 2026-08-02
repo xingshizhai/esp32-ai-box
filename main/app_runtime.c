@@ -30,6 +30,7 @@
 #include "storage.h"
 #endif
 #include "app_display.h"
+#include "app_role.h"
 
 static const char *TAG = "app_runtime";
 
@@ -76,6 +77,7 @@ typedef struct {
     volatile bool debug_play_record_req;
     volatile bool debug_play_req;
     volatile bool voice_round_req;
+    volatile bool initiative_req;
     TaskHandle_t chat_worker_task;
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
     TaskHandle_t local_wakeup_task;
@@ -209,6 +211,7 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
                                            char *assistant_text,
                                            size_t assistant_text_size);
 static esp_err_t app_runtime_run_voice_chat_round(void);
+static esp_err_t app_runtime_run_role_initiative(void);
 static esp_err_t app_runtime_initialize_ai_service(void);
 static esp_err_t app_runtime_initialize_voice_gateway_client(void);
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
@@ -490,9 +493,16 @@ static void app_local_wakeup_task(void *arg)
         return;
     }
 
-    char *model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, "nihaoxiaozhi");
+    const app_role_profile_t *role = app_role_get();
+    char *model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, role->wake_model_filter);
     if (model_name == NULL) {
-        ESP_LOGE(TAG, "WakeNet: 你好小智 model not found in model partition");
+        ESP_LOGE(TAG,
+                 "WakeNet unavailable for role=%s: phrase=%s model_filter=%s not found; "
+                 "screen action remains available",
+                 role->id, role->wake_phrase, role->wake_model_filter);
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status(role->idle_status);
+        }
         esp_srmodel_deinit(models);
         vTaskDelete(NULL);
         return;
@@ -550,11 +560,12 @@ static void app_local_wakeup_task(void *arg)
     }
 
     bool capture_started = false;
-    ESP_LOGI(TAG, "WakeNet ready: phrase=你好小智 model=%s frame=%d samples cooldown=%dms",
-             model_name, feed_samples, CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
+    ESP_LOGI(TAG, "WakeNet ready: role=%s phrase=%s model=%s frame=%d samples cooldown=%dms",
+             role->id, role->wake_phrase, model_name, feed_samples,
+             CONFIG_LOCAL_WAKEUP_COOLDOWN_MS);
     afe_handle->print_pipeline(afe_data);
     if (s_runtime.ui_ready) {
-        (void)ui_update_status("Say: 你好小智");
+        (void)ui_update_status(role->idle_status);
     }
 
     while (true) {
@@ -611,7 +622,7 @@ static void app_local_wakeup_task(void *arg)
             if ((int32_t)(now - s_runtime.conversation_deadline_tick) >= 0) {
                 s_runtime.conversation_mode_active = false;
                 if (s_runtime.ui_ready) {
-                    (void)ui_update_status("Say: 你好小智");
+                    (void)ui_update_status(role->idle_status);
                 }
                 ESP_LOGI(TAG, "Conversation window closed (no follow-up speech), wake word required again");
             } else if (result->vad_state == VAD_SPEECH &&
@@ -648,7 +659,8 @@ static void app_local_wakeup_task(void *arg)
 
         if (!s_runtime.voice_round_req && !s_runtime.is_processing) {
             if (wake_triggered) {
-                ESP_LOGI(TAG, "WakeNet detected 你好小智 (word=%d model=%d channel=%d)",
+                ESP_LOGI(TAG, "WakeNet detected %s (word=%d model=%d channel=%d)",
+                         role->wake_phrase,
                          result->wake_word_index,
                          result->wakenet_model_index,
                          result->trigger_channel_id);
@@ -1388,6 +1400,64 @@ fail:
     return err;
 }
 
+static esp_err_t app_runtime_run_role_initiative(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    if (!role->main_action_initiates_speech || role->initiative_prompt == NULL) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (!network_is_connected() || s_runtime.ai_service == NULL ||
+        s_runtime.voice_gateway_client == NULL || s_runtime.debug_playback_busy) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char *assistant_text = calloc(1, AI_MAX_RESPONSE_SIZE);
+    uint8_t *tts_audio = NULL;
+    int tts_len = 0;
+    char session_id[VOICE_SESSION_ID_MAX] = {0};
+    if (assistant_text == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("正在准备挑战...");
+    }
+    esp_err_t err = app_runtime_run_chat_turn(role->initiative_prompt,
+                                               assistant_text,
+                                               AI_MAX_RESPONSE_SIZE);
+    if (err != ESP_OK || assistant_text[0] == '\0') {
+        goto done;
+    }
+
+    app_config_t *cfg = config_get();
+    app_make_voice_turn_id(session_id, sizeof(session_id));
+    err = voice_gateway_tts_synthesize(s_runtime.voice_gateway_client,
+                                       session_id,
+                                       assistant_text,
+                                       cfg->tts_voice_name,
+                                       &tts_audio,
+                                       &tts_len);
+    if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
+        if (err == ESP_OK) err = ESP_FAIL;
+        goto done;
+    }
+
+    (void)audio_set_volume(cfg->volume);
+    err = audio_stream_play_chunk(tts_audio, tts_len);
+    if (err == ESP_OK) {
+        s_runtime.debug_playback_busy = true;
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("正在挑战小智...");
+        }
+        ESP_LOGI(TAG, "Role initiative spoken: role=%s text=%s", role->id, assistant_text);
+    }
+
+done:
+    free(tts_audio);
+    free(assistant_text);
+    return err;
+}
+
 static void app_handle_voice_round_request(void)
 {
     s_runtime.is_debug_mode = false;
@@ -1453,7 +1523,18 @@ static void app_chat_worker_task(void *arg)
 
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        app_handle_voice_round_request();
+        if (s_runtime.initiative_req) {
+            s_runtime.initiative_req = false;
+            esp_err_t err = app_runtime_run_role_initiative();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Role initiative failed: %s", esp_err_to_name(err));
+                if (s_runtime.ui_ready) {
+                    (void)ui_update_status("主动发言失败");
+                }
+            }
+        } else {
+            app_handle_voice_round_request();
+        }
     }
 }
 
@@ -1840,15 +1921,16 @@ esp_err_t app_runtime_init(bool ui_ready)
         return err;
     }
 
-    /* This is a spoken, real-time conversation, not a text chat window --
-     * keep replies short so TTS playback doesn't run for tens of seconds. */
-    static const char *kVoiceSystemPrompt =
-        "你是一个通过语音交流的智能助手，正在进行实时语音对话，"
-        "而不是文字聊天。回复必须简短、口语化，像日常说话一样，"
-        "通常一到两句话、40字以内说清楚，除非用户明确要求更详细的说明。"
-        "不要使用markdown、项目符号、加粗星号等排版，因为你的回复会被"
-        "转换成语音直接朗读出来。";
-    (void)conversation_add_message(&s_runtime.conversation, "system", kVoiceSystemPrompt);
+    const app_role_profile_t *role = app_role_get();
+    (void)conversation_add_message(&s_runtime.conversation, "system", role->system_prompt);
+    ESP_LOGI(TAG, "Role selected: id=%s name=%s wake=%s model=%s initiative=%s",
+             role->id, role->display_name, role->wake_phrase,
+             role->wake_model_filter,
+             role->main_action_initiates_speech ? "yes" : "no");
+    if (s_runtime.ui_ready) {
+        (void)ui_set_role_text(role->title, role->main_action_label);
+        (void)ui_update_status(role->idle_status);
+    }
 
     err = app_runtime_initialize_ai_service();
     if (err != ESP_OK) {
@@ -2019,6 +2101,22 @@ void app_runtime_request_voice_round(void)
 {
     app_runtime_mark_activity();
     s_runtime.voice_round_req = true;
+}
+
+void app_runtime_request_main_action(void)
+{
+    const app_role_profile_t *role = app_role_get();
+    app_runtime_mark_activity();
+    if (role->main_action_initiates_speech) {
+        if (!s_runtime.initiative_req && !s_runtime.is_processing) {
+            s_runtime.initiative_req = true;
+            if (s_runtime.chat_worker_task != NULL) {
+                (void)xTaskNotifyGive(s_runtime.chat_worker_task);
+            }
+        }
+        return;
+    }
+    app_runtime_request_voice_round();
 }
 
 void app_runtime_request_debug_record(void)

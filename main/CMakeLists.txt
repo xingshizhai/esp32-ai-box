@@ -17,6 +17,7 @@ idf_component_register(
         voice_chat
         storage
         board_iface
+        role
         esp_psram
         esp_adc
         esp_lcd
