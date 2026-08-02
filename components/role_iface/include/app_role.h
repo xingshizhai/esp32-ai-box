@@ -11,6 +11,10 @@ typedef struct {
     const char *label;
     const char *system_prompt;
     const char *initiative_prompt;
+    const char *silence_prompt;
+    const char *const *topic_prompts;
+    int topic_prompt_count;
+    bool randomize_topics;
 } app_role_mode_t;
 
 typedef struct {

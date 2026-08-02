@@ -151,10 +151,14 @@ idf.py -p /dev/ttyUSB0 flash monitor
 2. Choose 基准测试 (benchmark), 轻松聊天 (casual chat), 缺陷侦探 (defect hunter), or
    极限施压 (pressure test). Each mode is an independent module under `anti-pet/main/modes/`
    so its prompts and behavior can evolve separately.
+   Casual chat randomly chooses from its topic pool. Benchmark mode cycles through stable,
+   numbered test suites so results can be compared across repeated runs.
 3. Press “挑战小智”. On the first round, confirm that Dashen says “你好，小智” and waits for Xiaozhi's reply.
 4. Confirm that Dashen's ASR detects Xiaozhi saying “我在”. Only then may it generate and speak its first turn.
 5. Press “结束会话” to prevent further turns. Press the lower-left “模式” button to stop the
    current session and return to the mode start screen.
+   If Xiaozhi stays silent for one capture window, Dashen proactively continues according to
+   the selected mode; the normal turn limit still stops the session.
 6. If “我在” is not detected, confirm that the UI asks for a retry and no conversation starts.
 7. Confirm that the device does not reboot and returns to idle.
 

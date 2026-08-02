@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_random.h"
 
 #include "config.h"
 #include "provider_catalog.h"
@@ -82,8 +83,10 @@ typedef struct {
     volatile bool initiative_req;
     bool peer_handshake_confirmed;
     volatile bool peer_reply_expected;
+    volatile bool peer_silence_followup_req;
     int peer_auto_turns;
     int selected_mode_index;
+    int selected_topic_index;
     volatile bool session_stop_requested;
     bool role_session_active;
     TaskHandle_t chat_worker_task;
@@ -335,6 +338,7 @@ static void app_runtime_mode_selected(int mode_index)
         return;
     }
     s_runtime.selected_mode_index = mode_index;
+    s_runtime.selected_topic_index = -1;
     s_runtime.session_stop_requested = false;
     s_runtime.role_session_active = false;
     (void)app_runtime_reset_role_conversation();
@@ -362,6 +366,25 @@ static void app_runtime_show_mode_menu(void)
                                  labels,
                                  count,
                                  app_runtime_mode_selected);
+}
+
+static const char *app_runtime_select_topic_prompt(const app_role_mode_t *mode)
+{
+    if (mode == NULL || mode->topic_prompts == NULL || mode->topic_prompt_count <= 0) {
+        return mode != NULL ? mode->initiative_prompt : NULL;
+    }
+    if (mode->randomize_topics) {
+        s_runtime.selected_topic_index = (int)(esp_random() % (uint32_t)mode->topic_prompt_count);
+    } else {
+        s_runtime.selected_topic_index =
+            (s_runtime.selected_topic_index + 1) % mode->topic_prompt_count;
+    }
+    ESP_LOGI(TAG, "Mode topic selected: mode=%s topic=%d/%d strategy=%s",
+             mode->id,
+             s_runtime.selected_topic_index + 1,
+             mode->topic_prompt_count,
+             mode->randomize_topics ? "random" : "sequential");
+    return mode->topic_prompts[s_runtime.selected_topic_index];
 }
 
 #if CONFIG_ENABLE_VOICE_WAKEUP
@@ -1382,6 +1405,7 @@ done:
 
 static esp_err_t app_runtime_run_voice_chat_round(void)
 {
+    s_runtime.peer_silence_followup_req = false;
     if (s_runtime.session_stop_requested) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1467,6 +1491,7 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
     if (stt_text[0] == '\0') {
         fail_stage = "stt_empty";
+        s_runtime.peer_silence_followup_req = true;
         err = ESP_ERR_NOT_FOUND;
         goto fail;
     }
@@ -1777,9 +1802,16 @@ static esp_err_t app_runtime_run_role_initiative(void)
         (void)ui_update_status("正在准备挑战...");
     }
     const app_role_mode_t *mode = app_runtime_selected_mode();
-    const char *initiative_prompt =
-        (mode != NULL && mode->initiative_prompt != NULL) ? mode->initiative_prompt
-                                                          : role->initiative_prompt;
+    bool silence_followup = s_runtime.peer_silence_followup_req;
+    s_runtime.peer_silence_followup_req = false;
+    const char *initiative_prompt = role->initiative_prompt;
+    if (mode != NULL) {
+        if (silence_followup && mode->silence_prompt != NULL) {
+            initiative_prompt = mode->silence_prompt;
+        } else {
+            initiative_prompt = app_runtime_select_topic_prompt(mode);
+        }
+    }
     err = app_runtime_run_chat_turn(initiative_prompt,
                                     assistant_text,
                                     AI_MAX_RESPONSE_SIZE);
@@ -1872,7 +1904,7 @@ static esp_err_t app_runtime_run_role_initiative(void)
         if (s_runtime.ui_ready) {
             (void)ui_update_status("正在挑战小智...");
         }
-        ESP_LOGI(TAG, "Role initiative spoken: role=%s text=%s", role->id, assistant_text);
+    ESP_LOGI(TAG, "Role initiative spoken: role=%s text=%s", role->id, assistant_text);
     } else {
         s_runtime.peer_reply_expected = false;
         s_runtime.debug_playback_busy = false;
@@ -1937,9 +1969,25 @@ static void app_handle_voice_round_request(void)
     }
 
     ESP_LOGW(TAG, "Voice round failed: %s", esp_err_to_name(err));
+    const app_role_profile_t *role = app_role_get();
+    bool resume_after_silence = s_runtime.peer_silence_followup_req &&
+                                role->peer_auto_continue &&
+                                s_runtime.role_session_active &&
+                                !s_runtime.session_stop_requested &&
+                                s_runtime.peer_auto_turns < role->peer_auto_turn_limit;
+    if (resume_after_silence) {
+        ESP_LOGI(TAG, "Peer silent beyond capture threshold; scheduling proactive mode follow-up");
+        if (s_runtime.ui_ready) {
+            (void)ui_update_status("小智暂未回答，大神继续话题...");
+        }
+        s_runtime.initiative_req = true;
+        if (s_runtime.chat_worker_task != NULL) {
+            (void)xTaskNotifyGive(s_runtime.chat_worker_task);
+        }
+        return;
+    }
     if (s_runtime.ui_ready) {
         char status[96] = {0};
-        const app_role_profile_t *role = app_role_get();
         if (role->peer_auto_continue && s_runtime.peer_auto_turns > 0) {
             snprintf(status, sizeof(status), "未识别到小智回复，本轮结束");
         } else {
@@ -2565,6 +2613,8 @@ void app_runtime_request_main_action(void)
         }
         if (!s_runtime.initiative_req && !s_runtime.is_processing) {
             s_runtime.peer_auto_turns = 0;
+            /* A normal start chooses a fresh mode topic. Silence recovery
+             * keeps the current topic through conversation history. */
             s_runtime.peer_reply_expected = false;
             s_runtime.session_stop_requested = false;
             s_runtime.role_session_active = true;
