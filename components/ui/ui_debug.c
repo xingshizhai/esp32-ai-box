@@ -9,6 +9,7 @@ static const char *TAG = "ui_debug";
 static lv_obj_t *s_debug_menu_view = NULL;
 static lv_obj_t *s_debug_mic_view = NULL;
 static lv_obj_t *s_debug_play_view = NULL;
+static lv_obj_t *s_debug_ir_view = NULL;
 #if CONFIG_SDCARD_ENABLED
 static lv_obj_t *s_debug_sd_card_view = NULL;
 static lv_obj_t *s_debug_sd_mp3_view = NULL;
@@ -25,11 +26,15 @@ static lv_obj_t *s_playing_status = NULL;
 static lv_obj_t *s_play_status_label = NULL;
 static lv_obj_t *s_play_volume_slider = NULL;
 static lv_obj_t *s_play_volume_label = NULL;
+static lv_obj_t *s_ir_status_label = NULL;
 
 static ui_debug_action_callback_t s_record_action_cb = NULL;
 static ui_debug_action_callback_t s_play_record_action_cb = NULL;
 static ui_debug_action_callback_t s_play_action_cb = NULL;
 static ui_debug_volume_callback_t s_play_volume_cb = NULL;
+static ui_debug_action_callback_t s_ir_learn_action_cb = NULL;
+static ui_debug_action_callback_t s_ir_send_action_cb = NULL;
+static ui_debug_action_callback_t s_ir_forget_action_cb = NULL;
 #if CONFIG_SDCARD_ENABLED
 static ui_debug_action_callback_t s_sdcard_action_cb = NULL;
 static ui_debug_action_callback_t s_test_audio_action_cb = NULL;
@@ -39,6 +44,7 @@ typedef enum {
     DEBUG_VIEW_MENU = 0,
     DEBUG_VIEW_MIC,
     DEBUG_VIEW_PLAY,
+    DEBUG_VIEW_IR,
     DEBUG_VIEW_SD_CARD,
     DEBUG_VIEW_SD_MP3,
 } debug_view_t;
@@ -77,6 +83,7 @@ static void ui_debug_show_view_locked(debug_view_t view)
     lv_obj_add_flag(s_debug_menu_view, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_debug_mic_view, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_debug_play_view, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_debug_ir_view, LV_OBJ_FLAG_HIDDEN);
 #if CONFIG_SDCARD_ENABLED
     lv_obj_add_flag(s_debug_sd_card_view, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_debug_sd_mp3_view, LV_OBJ_FLAG_HIDDEN);
@@ -91,6 +98,9 @@ static void ui_debug_show_view_locked(debug_view_t view)
             break;
         case DEBUG_VIEW_PLAY:
             lv_obj_clear_flag(s_debug_play_view, LV_OBJ_FLAG_HIDDEN);
+            break;
+        case DEBUG_VIEW_IR:
+            lv_obj_clear_flag(s_debug_ir_view, LV_OBJ_FLAG_HIDDEN);
             break;
 #if CONFIG_SDCARD_ENABLED
         case DEBUG_VIEW_SD_CARD:
@@ -122,6 +132,13 @@ static void ui_debug_menu_play_event_cb(lv_event_t *event)
 {
     if (ui_debug_is_activate_event(lv_event_get_code(event))) {
         ui_debug_show_view_locked(DEBUG_VIEW_PLAY);
+    }
+}
+
+static void ui_debug_menu_ir_event_cb(lv_event_t *event)
+{
+    if (ui_debug_is_activate_event(lv_event_get_code(event))) {
+        ui_debug_show_view_locked(DEBUG_VIEW_IR);
     }
 }
 
@@ -205,6 +222,43 @@ static void ui_play_volume_slider_event_cb(lv_event_t *event)
     }
 }
 
+static void ui_ir_learn_btn_event_cb(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        ESP_LOGI(TAG, "IR Learn button event: %s", ui_debug_event_code_to_str(code));
+    }
+
+    /* Use PRESSED here to avoid missing CLICKED on touch jitter and keep one-shot behavior. */
+    if (code == LV_EVENT_PRESSED && s_ir_learn_action_cb != NULL) {
+        s_ir_learn_action_cb();
+    }
+}
+
+static void ui_ir_send_btn_event_cb(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        ESP_LOGI(TAG, "IR Send button event: %s", ui_debug_event_code_to_str(code));
+    }
+
+    if (code == LV_EVENT_PRESSED && s_ir_send_action_cb != NULL) {
+        s_ir_send_action_cb();
+    }
+}
+
+static void ui_ir_forget_btn_event_cb(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        ESP_LOGI(TAG, "IR Forget button event: %s", ui_debug_event_code_to_str(code));
+    }
+
+    if (code == LV_EVENT_PRESSED && s_ir_forget_action_cb != NULL) {
+        s_ir_forget_action_cb();
+    }
+}
+
 #if CONFIG_SDCARD_ENABLED
 static void ui_test_audio_btn_event_cb(lv_event_t *event)
 {
@@ -261,8 +315,9 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
     const int split_left_x = (LV_HOR_RES - split_total_width) / 2;
     const int menu_btn_height = 36;
     const int menu_row_1_y = 40;
-#if CONFIG_SDCARD_ENABLED
     const int menu_row_2_y = 94;
+#if CONFIG_SDCARD_ENABLED
+    const int menu_row_3_y = 148;
 #endif
 
     lv_obj_t *menu_mic_btn = lv_btn_create(s_debug_menu_view);
@@ -281,10 +336,18 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
     lv_label_set_text(menu_play_label, "Play");
     lv_obj_center(menu_play_label);
 
+    lv_obj_t *menu_ir_btn = lv_btn_create(s_debug_menu_view);
+    lv_obj_set_size(menu_ir_btn, split_btn_width, menu_btn_height);
+    lv_obj_align(menu_ir_btn, LV_ALIGN_TOP_MID, 0, menu_row_2_y);
+    lv_obj_add_event_cb(menu_ir_btn, ui_debug_menu_ir_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_t *menu_ir_label = lv_label_create(menu_ir_btn);
+    lv_label_set_text(menu_ir_label, "IR");
+    lv_obj_center(menu_ir_label);
+
 #if CONFIG_SDCARD_ENABLED
     lv_obj_t *menu_sd_card_btn = lv_btn_create(s_debug_menu_view);
     lv_obj_set_size(menu_sd_card_btn, split_btn_width, menu_btn_height);
-    lv_obj_align(menu_sd_card_btn, LV_ALIGN_TOP_LEFT, split_left_x, menu_row_2_y);
+    lv_obj_align(menu_sd_card_btn, LV_ALIGN_TOP_LEFT, split_left_x, menu_row_3_y);
     lv_obj_add_event_cb(menu_sd_card_btn, ui_debug_menu_sd_card_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_t *menu_sd_card_label = lv_label_create(menu_sd_card_btn);
     lv_label_set_text(menu_sd_card_label, "SD Card");
@@ -292,7 +355,7 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
 
     lv_obj_t *menu_sd_mp3_btn = lv_btn_create(s_debug_menu_view);
     lv_obj_set_size(menu_sd_mp3_btn, split_btn_width, menu_btn_height);
-    lv_obj_align(menu_sd_mp3_btn, LV_ALIGN_TOP_LEFT, split_left_x + split_btn_width + split_btn_gap, menu_row_2_y);
+    lv_obj_align(menu_sd_mp3_btn, LV_ALIGN_TOP_LEFT, split_left_x + split_btn_width + split_btn_gap, menu_row_3_y);
     lv_obj_add_event_cb(menu_sd_mp3_btn, ui_debug_menu_sd_mp3_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_t *menu_sd_mp3_label = lv_label_create(menu_sd_mp3_btn);
     lv_label_set_text(menu_sd_mp3_label, "SD MP3");
@@ -440,6 +503,70 @@ esp_err_t ui_debug_init_views(lv_obj_t *debug_panel, const lv_style_t *style, lv
     lv_obj_t *play_record_label = lv_label_create(play_record_btn);
     lv_label_set_text(play_record_label, "Record 5s");
     lv_obj_center(play_record_label);
+
+    s_debug_ir_view = lv_obj_create(debug_panel);
+    if (s_debug_ir_view == NULL) {
+        ESP_LOGE(TAG, "Failed to create IR submenu - out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_add_style(s_debug_ir_view, style, 0);
+    lv_obj_set_size(s_debug_ir_view, LV_HOR_RES, LV_VER_RES);
+    lv_obj_center(s_debug_ir_view);
+    lv_obj_clear_flag(s_debug_ir_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_debug_ir_view, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *ir_title = lv_label_create(s_debug_ir_view);
+    lv_label_set_text(ir_title, "IR Debug (learn/send \"debug_test\")");
+    lv_obj_align(ir_title, LV_ALIGN_TOP_MID, 0, 10);
+
+    s_ir_status_label = lv_label_create(s_debug_ir_view);
+    if (s_ir_status_label == NULL) {
+        ESP_LOGE(TAG, "Failed to create IR status label - out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_width(s_ir_status_label, LV_HOR_RES - 28);
+    lv_label_set_long_mode(s_ir_status_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_ir_status_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_ir_status_label, "Ready");
+    lv_obj_align(s_ir_status_label, LV_ALIGN_TOP_MID, 0, 44);
+
+    const int ir_btn_width = 90;
+    const int ir_btn_gap = 8;
+    const int ir_btn_total_width = (ir_btn_width * 3) + (ir_btn_gap * 2);
+    const int ir_btn_left_x = (LV_HOR_RES - ir_btn_total_width) / 2;
+    const int ir_btn_y = 100;
+
+    lv_obj_t *ir_learn_btn = lv_btn_create(s_debug_ir_view);
+    lv_obj_set_size(ir_learn_btn, ir_btn_width, 40);
+    lv_obj_align(ir_learn_btn, LV_ALIGN_TOP_LEFT, ir_btn_left_x, ir_btn_y);
+    lv_obj_add_event_cb(ir_learn_btn, ui_ir_learn_btn_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_t *ir_learn_label = lv_label_create(ir_learn_btn);
+    lv_label_set_text(ir_learn_label, "Learn");
+    lv_obj_center(ir_learn_label);
+
+    lv_obj_t *ir_send_btn = lv_btn_create(s_debug_ir_view);
+    lv_obj_set_size(ir_send_btn, ir_btn_width, 40);
+    lv_obj_align(ir_send_btn, LV_ALIGN_TOP_LEFT, ir_btn_left_x + ir_btn_width + ir_btn_gap, ir_btn_y);
+    lv_obj_add_event_cb(ir_send_btn, ui_ir_send_btn_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_t *ir_send_label = lv_label_create(ir_send_btn);
+    lv_label_set_text(ir_send_label, "Send");
+    lv_obj_center(ir_send_label);
+
+    lv_obj_t *ir_forget_btn = lv_btn_create(s_debug_ir_view);
+    lv_obj_set_size(ir_forget_btn, ir_btn_width, 40);
+    lv_obj_align(ir_forget_btn, LV_ALIGN_TOP_LEFT, ir_btn_left_x + (ir_btn_width + ir_btn_gap) * 2, ir_btn_y);
+    lv_obj_add_event_cb(ir_forget_btn, ui_ir_forget_btn_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_t *ir_forget_label = lv_label_create(ir_forget_btn);
+    lv_label_set_text(ir_forget_label, "Forget");
+    lv_obj_center(ir_forget_label);
+
+    lv_obj_t *ir_back_btn = lv_btn_create(s_debug_ir_view);
+    lv_obj_set_size(ir_back_btn, 140, 36);
+    lv_obj_align(ir_back_btn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_add_event_cb(ir_back_btn, ui_debug_submenu_back_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_t *ir_back_label = lv_label_create(ir_back_btn);
+    lv_label_set_text(ir_back_label, "Back Menu");
+    lv_obj_center(ir_back_label);
 
 #if CONFIG_SDCARD_ENABLED
     s_debug_sd_card_view = lv_obj_create(debug_panel);
@@ -654,6 +781,41 @@ esp_err_t ui_debug_set_play_volume(int volume)
     lv_label_set_text_fmt(s_play_volume_label, "Vol %d", volume);
 
     lvgl_port_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ui_debug_update_ir_status(const char *status)
+{
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ir_status_label == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!lvgl_port_lock(0)) {
+        return ESP_FAIL;
+    }
+    lv_label_set_text(s_ir_status_label, status);
+    lvgl_port_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ui_debug_set_ir_learn_action_callback(ui_debug_action_callback_t callback)
+{
+    s_ir_learn_action_cb = callback;
+    return ESP_OK;
+}
+
+esp_err_t ui_debug_set_ir_send_action_callback(ui_debug_action_callback_t callback)
+{
+    s_ir_send_action_cb = callback;
+    return ESP_OK;
+}
+
+esp_err_t ui_debug_set_ir_forget_action_callback(ui_debug_action_callback_t callback)
+{
+    s_ir_forget_action_cb = callback;
     return ESP_OK;
 }
 

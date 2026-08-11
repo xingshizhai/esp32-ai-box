@@ -59,6 +59,9 @@ esp_err_t voice_gateway_stt_send_audio(voice_gateway_client_t *client,
                                        const char *session_id,
                                        const uint8_t *pcm,
                                        int len);
+/* Monotonically increases whenever embedded streaming ASR publishes
+ * non-empty text. Zero means no partial text is available. */
+uint32_t voice_gateway_stt_result_revision(voice_gateway_client_t *client);
 esp_err_t voice_gateway_stt_stop(voice_gateway_client_t *client,
                                  const char *session_id,
                                  char *out_text,

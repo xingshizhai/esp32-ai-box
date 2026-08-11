@@ -2,3 +2,9 @@
 # after a genuine "你好十神" model has been installed.
 # CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP is not set
 CONFIG_MODEL_IN_FLASH=y
+# The LCD-EV board microphone sees substantially more speaker coupling than
+# ESP-BOX.  A threshold of 600 never reached silence and forced every peer
+# reply to consume the full 20-second capture window.
+CONFIG_PEER_SPEECH_LEVEL_THRESHOLD=2000
+CONFIG_VAD_SILENCE_MS=600
+CONFIG_PEER_SILENCE_WAIT_MS=300

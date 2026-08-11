@@ -30,6 +30,11 @@ typedef struct {
 
 esp_err_t conversation_init(conversation_manager_t *conv, int max_history);
 esp_err_t conversation_add_message(conversation_manager_t *conv, const char *role, const char *content);
+/* Persists an assistant message that requested tool call(s) (echoed back so
+ * the provider can match up the "tool" result messages that follow it). */
+esp_err_t conversation_add_assistant_tool_calls(conversation_manager_t *conv, const ai_tool_call_t *calls, int count);
+/* Persists the result of one tool call, addressed by tool_call_id. */
+esp_err_t conversation_add_tool_result(conversation_manager_t *conv, const char *tool_call_id, const char *content);
 esp_err_t conversation_get_messages(conversation_manager_t *conv, ai_message_t **messages);
 esp_err_t conversation_clear(conversation_manager_t *conv);
 esp_err_t conversation_set_state(conversation_manager_t *conv, conversation_state_t state);

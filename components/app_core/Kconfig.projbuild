@@ -414,6 +414,17 @@ menu "Ai-Box Configuration"
                 help
                     Minimum interval between two accepted wake word events.
 
+            config CONVERSATION_FOLLOWUP_MS
+                int "Continuous conversation follow-up window (ms)"
+                depends on ENABLE_LOCAL_OFFLINE_WAKEUP
+                default 10000
+                range 3000 120000
+                help
+                    After the assistant finishes speaking, accept the next
+                    utterance without another wake word for this long. Peer
+                    devices may need a longer window while they perform ASR,
+                    LLM inference, and TTS before asking their next question.
+
             config ENABLE_BARGE_IN
                 bool "Enable barge-in by default"
                 default y
@@ -608,6 +619,32 @@ menu "Ai-Box Configuration"
             default n
             help
                 If enabled the PA is turned on when the GPIO is driven low.
+
+    endmenu
+
+    menu "Infrared (IR) Hardware Configuration"
+
+        config IR_TX_GPIO
+            int "IR transmitter (blaster) GPIO (-1 = disabled)"
+            default 39
+            range -1 48
+            help
+                GPIO driving the IR LED, used to replay learned remote codes.
+                Default 39 matches the ESP32-S3-BOX-3-SENSOR dock's IR
+                emitter (IRM-H638T) pin, sourced from third-party hardware
+                teardown info rather than Espressif's schematic -- verify
+                against your hardware and adjust if learning/sending
+                doesn't work. Set to -1 if no IR hardware is attached.
+
+        config IR_RX_GPIO
+            int "IR receiver GPIO (-1 = disabled)"
+            default 38
+            range -1 48
+            help
+                GPIO reading the IR receiver module output, used to learn
+                remote codes. Default 38 matches the BOX-3-SENSOR dock's IR
+                receiver (IR67-21C/TR8) pin -- same caveat as IR_TX_GPIO.
+                Set to -1 if no IR hardware is attached.
 
     endmenu
 

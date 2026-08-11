@@ -24,6 +24,9 @@ void app_runtime_request_debug_record(void);
 void app_runtime_request_debug_play_record(void);
 void app_runtime_request_debug_play(void);
 void app_runtime_set_debug_play_volume(int volume);
+void app_runtime_request_debug_ir_learn(void);
+void app_runtime_request_debug_ir_send(void);
+void app_runtime_request_debug_ir_forget(void);
 
 void app_runtime_handle_network_state(net_state_t state, void *user_data);
 void app_runtime_handle_stt_result(const char *text);

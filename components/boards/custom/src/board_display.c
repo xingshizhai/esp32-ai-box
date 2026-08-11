@@ -17,6 +17,7 @@
 
 #include "app_display.h"
 #include "app_board_audio.h"
+#include "app_board_ir.h"
 #include "sdkconfig.h"
 
 #include "esp_log.h"
@@ -53,6 +54,16 @@ esp_err_t app_board_get_audio_config(app_board_audio_config_t *config)
 #else
         .pa_inverted = false,
 #endif
+    };
+    return ESP_OK;
+}
+
+esp_err_t app_board_get_ir_config(app_board_ir_config_t *config)
+{
+    if (config == NULL) return ESP_ERR_INVALID_ARG;
+    *config = (app_board_ir_config_t) {
+        .ir_tx_gpio = CONFIG_IR_TX_GPIO,
+        .ir_rx_gpio = CONFIG_IR_RX_GPIO,
     };
     return ESP_OK;
 }

@@ -12,3 +12,8 @@ CONFIG_AUDIO_ES8311_I2C_ADDR=0x18
 CONFIG_AUDIO_ES7210_I2C_ADDR=0x40
 CONFIG_AUDIO_PA_GPIO=46
 # CONFIG_AUDIO_PA_INVERTED is not set
+
+# ESP32-S3-BOX-3-SENSOR dock IR emitter/receiver pins (unconfirmed against
+# Espressif's schematic -- see components/app_core/Kconfig.projbuild).
+CONFIG_IR_TX_GPIO=39
+CONFIG_IR_RX_GPIO=38

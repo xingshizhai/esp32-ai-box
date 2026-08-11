@@ -29,9 +29,12 @@ typedef struct {
 static esp_err_t deepseek_service_init(ai_service_t *service, const ai_config_t *config);
 static esp_err_t deepseek_service_chat(ai_service_t *service, const char *user_message, ai_response_t *response);
 static esp_err_t deepseek_service_chat_with_history(ai_service_t *service, ai_message_t *messages, ai_response_t *response);
+static esp_err_t deepseek_service_chat_with_tools(ai_service_t *service, ai_message_t *messages, const char *tools_json, ai_response_t *response);
 static esp_err_t deepseek_service_cleanup(ai_service_t *service);
 static char *build_deepseek_payload(const char *model, const char *user_message, float temperature, int max_tokens);
 static char *build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens);
+static char *build_deepseek_tools_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens, const char *tools_json);
+static void add_deepseek_message_array(cJSON *msg_array, ai_message_t *messages);
 static esp_err_t parse_deepseek_response(const char *response_body, ai_response_t *response);
 static esp_err_t deepseek_http_post_json(const deepseek_service_data_t *data,
                                          const char *payload,
@@ -48,6 +51,7 @@ ai_service_t *deepseek_service_create(void)
     service->init = deepseek_service_init;
     service->chat = deepseek_service_chat;
     service->chat_with_history = deepseek_service_chat_with_history;
+    service->chat_with_tools = deepseek_service_chat_with_tools;
     service->speech_to_text = NULL;
     service->text_to_speech = NULL;
     service->cleanup = deepseek_service_cleanup;
@@ -268,6 +272,49 @@ static esp_err_t deepseek_service_chat_with_history(ai_service_t *service, ai_me
     return err;
 }
 
+static esp_err_t deepseek_service_chat_with_tools(ai_service_t *service, ai_message_t *messages, const char *tools_json, ai_response_t *response)
+{
+    if (service == NULL || service->private_data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    deepseek_service_data_t *data = (deepseek_service_data_t *)service->private_data;
+    char *payload = build_deepseek_tools_payload(data->model, messages, data->temperature, data->max_tokens, tools_json);
+    if (payload == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "DeepSeek tools request bytes=%u model=%s max_tokens=%d",
+             (unsigned)strlen(payload), data->model, data->max_tokens);
+
+    char *response_body = NULL;
+    int status = 0;
+    esp_err_t err = deepseek_http_post_json(data, payload, &response_body, &status);
+    free(payload);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+        free(response_body);
+        return err;
+    }
+
+    if (status != 200) {
+        ESP_LOGE(TAG, "HTTP error: %d body=%.200s", status, response_body ? response_body : "");
+        if (response != NULL) {
+            snprintf(response->error_msg,
+                     sizeof(response->error_msg),
+                     "HTTP %d: %.220s",
+                     status,
+                     (response_body && response_body[0]) ? response_body : "empty");
+        }
+        free(response_body);
+        return ESP_FAIL;
+    }
+
+    err = parse_deepseek_response(response_body, response);
+    free(response_body);
+    return err;
+}
+
 static esp_err_t deepseek_service_cleanup(ai_service_t *service)
 {
     if (service == NULL || service->private_data == NULL) {
@@ -305,24 +352,84 @@ static char *build_deepseek_payload(const char *model, const char *user_message,
     return payload;
 }
 
+/* Shared by build_deepseek_history_payload / build_deepseek_tools_payload.
+ * Handles the three message shapes the DeepSeek (OpenAI-compatible) API
+ * expects:
+ *   - plain (role/content)
+ *   - assistant tool-call request (tool_call_count > 0): "tool_calls" array,
+ *     no "content"
+ *   - tool result (tool_call_id != NULL): adds "tool_call_id"
+ */
+static void add_deepseek_message_array(cJSON *msg_array, ai_message_t *messages)
+{
+    for (ai_message_t *current = messages; current != NULL; current = current->next) {
+        cJSON *msg = cJSON_CreateObject();
+        cJSON_AddStringToObject(msg, "role", current->role);
+
+        if (current->tool_call_count > 0) {
+            cJSON *tool_calls = cJSON_CreateArray();
+            for (int i = 0; i < current->tool_call_count; i++) {
+                const ai_tool_call_t *call = &current->tool_calls[i];
+                cJSON *tc = cJSON_CreateObject();
+                cJSON_AddStringToObject(tc, "id", call->id);
+                cJSON_AddStringToObject(tc, "type", "function");
+                cJSON *fn = cJSON_CreateObject();
+                cJSON_AddStringToObject(fn, "name", call->name);
+                cJSON_AddStringToObject(fn, "arguments", call->arguments);
+                cJSON_AddItemToObject(tc, "function", fn);
+                cJSON_AddItemToArray(tool_calls, tc);
+            }
+            cJSON_AddItemToObject(msg, "tool_calls", tool_calls);
+        } else {
+            cJSON_AddStringToObject(msg, "content", current->content ? current->content : "");
+        }
+
+        if (current->tool_call_id != NULL) {
+            cJSON_AddStringToObject(msg, "tool_call_id", current->tool_call_id);
+        }
+
+        cJSON_AddItemToArray(msg_array, msg);
+    }
+}
+
 static char *build_deepseek_history_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *msg_array = cJSON_CreateArray();
 
-    ai_message_t *current = messages;
-    while (current != NULL) {
-        cJSON *msg = cJSON_CreateObject();
-        cJSON_AddStringToObject(msg, "role", current->role);
-        cJSON_AddStringToObject(msg, "content", current->content);
-        cJSON_AddItemToArray(msg_array, msg);
-        current = current->next;
-    }
+    add_deepseek_message_array(msg_array, messages);
 
     cJSON_AddStringToObject(root, "model", model);
     cJSON_AddItemToObject(root, "messages", msg_array);
     cJSON_AddNumberToObject(root, "temperature", temperature);
     cJSON_AddNumberToObject(root, "max_tokens", max_tokens);
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return payload;
+}
+
+static char *build_deepseek_tools_payload(const char *model, ai_message_t *messages, float temperature, int max_tokens, const char *tools_json)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *msg_array = cJSON_CreateArray();
+
+    add_deepseek_message_array(msg_array, messages);
+
+    cJSON_AddStringToObject(root, "model", model);
+    cJSON_AddItemToObject(root, "messages", msg_array);
+    cJSON_AddNumberToObject(root, "temperature", temperature);
+    cJSON_AddNumberToObject(root, "max_tokens", max_tokens);
+
+    if (tools_json != NULL) {
+        cJSON *tools = cJSON_Parse(tools_json);
+        if (tools != NULL) {
+            cJSON_AddItemToObject(root, "tools", tools);
+            cJSON_AddStringToObject(root, "tool_choice", "auto");
+        } else {
+            ESP_LOGW(TAG, "tools_json failed to parse, sending request without tools");
+        }
+    }
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -352,15 +459,50 @@ static esp_err_t parse_deepseek_response(const char *response_body, ai_response_
         return ESP_FAIL;
     }
 
+    cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
+    if (tool_calls != NULL && cJSON_IsArray(tool_calls)) {
+        int n = cJSON_GetArraySize(tool_calls);
+        if (n > AI_MAX_TOOL_CALLS) {
+            ESP_LOGW(TAG, "Model requested %d tool calls, truncating to %d", n, AI_MAX_TOOL_CALLS);
+            n = AI_MAX_TOOL_CALLS;
+        }
+        for (int i = 0; i < n; i++) {
+            cJSON *tc = cJSON_GetArrayItem(tool_calls, i);
+            cJSON *id = cJSON_GetObjectItem(tc, "id");
+            cJSON *fn = cJSON_GetObjectItem(tc, "function");
+            cJSON *name = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
+            cJSON *args = fn ? cJSON_GetObjectItem(fn, "arguments") : NULL;
+
+            ai_tool_call_t *call = &response->tool_calls[response->tool_call_count];
+            memset(call, 0, sizeof(*call));
+            if (cJSON_IsString(id)) {
+                strncpy(call->id, id->valuestring, AI_MAX_TOOL_CALL_ID - 1);
+            }
+            if (cJSON_IsString(name)) {
+                strncpy(call->name, name->valuestring, AI_MAX_TOOL_NAME - 1);
+            }
+            if (cJSON_IsString(args)) {
+                if (strlen(args->valuestring) >= AI_MAX_TOOL_ARGS) {
+                    ESP_LOGW(TAG, "Tool call arguments for %s truncated (%d bytes)",
+                             call->name, (int)strlen(args->valuestring));
+                }
+                strncpy(call->arguments, args->valuestring, AI_MAX_TOOL_ARGS - 1);
+            } else {
+                strcpy(call->arguments, "{}");
+            }
+            response->tool_call_count++;
+        }
+    }
+
     cJSON *content = cJSON_GetObjectItem(message, "content");
-    if (content == NULL || !cJSON_IsString(content)) {
-        ESP_LOGE(TAG, "No content in message");
+    if (content != NULL && cJSON_IsString(content)) {
+        strncpy(response->content, content->valuestring, AI_MAX_RESPONSE_SIZE - 1);
+        response->content[AI_MAX_RESPONSE_SIZE - 1] = '\0';
+    } else if (response->tool_call_count == 0) {
+        ESP_LOGE(TAG, "No content and no tool_calls in message");
         cJSON_Delete(root);
         return ESP_FAIL;
     }
-
-    strncpy(response->content, content->valuestring, AI_MAX_RESPONSE_SIZE - 1);
-    response->content[AI_MAX_RESPONSE_SIZE - 1] = '\0';
     response->is_success = true;
 
     cJSON *usage = cJSON_GetObjectItem(root, "usage");

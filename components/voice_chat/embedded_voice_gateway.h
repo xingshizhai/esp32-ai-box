@@ -23,6 +23,7 @@ esp_err_t embedded_voice_gateway_stt_start(embedded_voice_gateway_t *gateway,
 esp_err_t embedded_voice_gateway_stt_send_audio(embedded_voice_gateway_t *gateway,
                                                 const uint8_t *pcm,
                                                 int len);
+uint32_t embedded_voice_gateway_stt_result_revision(embedded_voice_gateway_t *gateway);
 esp_err_t embedded_voice_gateway_stt_stop(embedded_voice_gateway_t *gateway,
                                           char *out_text,
                                           int out_text_size);

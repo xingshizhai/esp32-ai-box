@@ -53,7 +53,9 @@ static ui_main_action_callback_t s_mode_menu_cb = NULL;
 static ui_mode_select_callback_t s_mode_select_cb = NULL;
 static bool s_session_active = false;
 static lv_obj_t *s_mode_panel = NULL;
+static lv_obj_t *s_splash_panel = NULL;
 static ui_main_view_t s_main_view = {0};
+static bool s_speech_mouth_open = false;
 
 /* Compiled-in font only covers ~90 curated glyphs used by static UI labels.
  * Free-form AI chat text needs much broader CJK coverage; that font is too
@@ -196,6 +198,106 @@ static void ui_apply_pet_mood_locked(pet_mood_t mood)
     lv_obj_align(s_main_view.mouth, LV_ALIGN_BOTTOM_MID, 0, -18);
 }
 
+static void ui_speech_animation_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_main_view.mouth == NULL || s_main_view.mood != PET_MOOD_SPEAK) {
+        s_speech_mouth_open = false;
+        return;
+    }
+
+    s_speech_mouth_open = !s_speech_mouth_open;
+    const int mouth_w = s_speech_mouth_open ? 34 : 24;
+    const int mouth_h = s_speech_mouth_open ? 22 : 8;
+    lv_obj_set_size(s_main_view.mouth, mouth_w, mouth_h);
+    lv_obj_set_style_radius(s_main_view.mouth, mouth_h / 2, 0);
+    lv_obj_align(s_main_view.mouth, LV_ALIGN_BOTTOM_MID, 0, -18);
+}
+
+static void ui_splash_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_splash_panel != NULL) {
+        lv_obj_del(s_splash_panel);
+        s_splash_panel = NULL;
+    }
+}
+
+static esp_err_t ui_build_splash(lv_obj_t *parent)
+{
+    const bool large = LV_HOR_RES >= 600 && LV_VER_RES >= 400;
+#if CONFIG_APP_BOARD_ESP32S3_LCD_EV_BOARD
+    const char *product = "ANTI-CHAT · 大神";
+    const char *device = "ESP32-S3-LCD-EV-BOARD";
+#else
+    const char *product = "AI-CHAT · 小智";
+    const char *device = "ESP32-BOX-2";
+#endif
+
+    s_splash_panel = lv_obj_create(parent);
+    if (s_splash_panel == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(s_splash_panel, LV_HOR_RES, LV_VER_RES);
+    lv_obj_center(s_splash_panel);
+    lv_obj_clear_flag(s_splash_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_border_width(s_splash_panel, 0, 0);
+    lv_obj_set_style_radius(s_splash_panel, 0, 0);
+    lv_obj_set_style_bg_color(s_splash_panel, lv_color_hex(0x071426), 0);
+    lv_obj_set_style_bg_grad_color(s_splash_panel, lv_color_hex(0x123B67), 0);
+    lv_obj_set_style_bg_grad_dir(s_splash_panel, LV_GRAD_DIR_VER, 0);
+
+    lv_obj_t *chip = lv_obj_create(s_splash_panel);
+    if (chip == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(chip, large ? 250 : 184, large ? 104 : 78);
+    lv_obj_align(chip, LV_ALIGN_CENTER, 0, large ? -58 : -38);
+    lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(chip, large ? 26 : 20, 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(0xE7352C), 0);
+    lv_obj_set_style_border_width(chip, 2, 0);
+    lv_obj_set_style_border_color(chip, lv_color_hex(0xFF8A65), 0);
+    lv_obj_set_style_shadow_width(chip, 22, 0);
+    lv_obj_set_style_shadow_opa(chip, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_color(chip, lv_color_hex(0xE7352C), 0);
+
+    lv_obj_t *brand = lv_label_create(chip);
+    if (brand == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_label_set_text(brand, "ESP32");
+    lv_obj_set_style_text_font(brand, ui_main_font(), 0);
+    lv_obj_set_style_text_color(brand, lv_color_white(), 0);
+    lv_obj_center(brand);
+
+    lv_obj_t *product_label = lv_label_create(s_splash_panel);
+    lv_obj_t *device_label = lv_label_create(s_splash_panel);
+    lv_obj_t *tagline_label = lv_label_create(s_splash_panel);
+    if (product_label == NULL || device_label == NULL || tagline_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_label_set_text(product_label, product);
+    lv_label_set_text(device_label, device);
+    lv_label_set_text(tagline_label, "Powered by Espressif · Built with ESP32");
+    lv_obj_set_style_text_font(product_label, ui_main_font(), 0);
+    lv_obj_set_style_text_font(device_label, ui_main_font(), 0);
+    lv_obj_set_style_text_font(tagline_label, ui_main_font(), 0);
+    lv_obj_set_style_text_color(product_label, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_text_color(device_label, lv_color_hex(0x7DD3FC), 0);
+    lv_obj_set_style_text_color(tagline_label, lv_color_hex(0x94A3B8), 0);
+    lv_obj_align(product_label, LV_ALIGN_CENTER, 0, large ? 30 : 24);
+    lv_obj_align(device_label, LV_ALIGN_CENTER, 0, large ? 62 : 48);
+    lv_obj_align(tagline_label, LV_ALIGN_BOTTOM_MID, 0, large ? -38 : -16);
+
+    lv_obj_move_foreground(s_splash_panel);
+    lv_timer_t *timer = lv_timer_create(ui_splash_timer_cb, 2800, NULL);
+    if (timer != NULL) {
+        lv_timer_set_repeat_count(timer, 1);
+    }
+    return ESP_OK;
+}
+
 static pet_mood_t ui_mood_from_status(const char *status)
 {
     if (status == NULL || status[0] == '\0') {
@@ -211,7 +313,7 @@ static pet_mood_t ui_mood_from_status(const char *status)
         return PET_MOOD_THINK;
     }
     if (strstr(status, "Speak") || strstr(status, "说话") || strstr(status, "TTS") ||
-        strstr(status, "Playing") || strstr(status, "播放")) {
+        strstr(status, "Playing") || strstr(status, "播放") || strstr(status, "挑战小智")) {
         return PET_MOOD_SPEAK;
     }
     if (strstr(status, "Error") || strstr(status, "错误") || strstr(status, "Fail") ||
@@ -246,7 +348,7 @@ static void ui_apply_status_copy_locked(const char *status)
             break;
         case PET_MOOD_THINK:
             hint = "思考中";
-            action = "请稍候...";
+            action = "思考中";
             action_color = 0x2563EB;
             break;
         case PET_MOOD_SPEAK:
@@ -282,6 +384,8 @@ static void ui_action_button_event_cb(lv_event_t *event)
     }
 
     if (ui_is_activate_event(code)) {
+        ESP_LOGI(TAG, "Action dispatch: active=%d start_cb=%p end_cb=%p",
+                 s_session_active, s_main_action_cb, s_end_session_cb);
         if (s_session_active && s_end_session_cb != NULL) {
             s_end_session_cb();
         } else if (!s_session_active && s_main_action_cb != NULL) {
@@ -332,7 +436,13 @@ static esp_err_t ui_show_panel_locked(ui_panel_t panel)
             lv_obj_clear_flag(s_settings_panel, LV_OBJ_FLAG_HIDDEN);
             break;
         case UI_PANEL_LOADING:
-            lv_obj_clear_flag(s_loading_panel, LV_OBJ_FLAG_HIDDEN);
+            /* Keep the pet visible while an AI request is in flight.  A
+             * full-screen loading message makes voice interaction feel like
+             * the app has left the conversation. */
+            lv_obj_clear_flag(s_main_panel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_main_view.status_label, "思考中");
+            ui_apply_pet_mood_locked(PET_MOOD_THINK);
+            ui_apply_status_copy_locked("思考中");
             break;
         case UI_PANEL_DEBUG:
             lv_obj_clear_flag(s_debug_panel, LV_OBJ_FLAG_HIDDEN);
@@ -434,6 +544,7 @@ esp_err_t ui_init(void)
     ESP_LOGI(TAG, "Initializing UI");
 
     esp_err_t ret = ESP_OK;
+    const bool use_large_main_layout = LV_HOR_RES >= 600 && LV_VER_RES >= 400;
 
     ui_load_cjk_font();
 
@@ -474,7 +585,7 @@ esp_err_t ui_init(void)
     }
     ui_set_circle(glow, 180, 0x1E3A5F);
     lv_obj_set_style_bg_opa(glow, LV_OPA_40, 0);
-    lv_obj_align(glow, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_align(glow, LV_ALIGN_TOP_MID, 0, use_large_main_layout ? 62 : 18);
     lv_obj_clear_flag(glow, LV_OBJ_FLAG_CLICKABLE);
 
     s_main_view.title_label = lv_label_create(s_main_panel);
@@ -501,6 +612,9 @@ esp_err_t ui_init(void)
     if (ret != ESP_OK) {
         goto fail;
     }
+    if (use_large_main_layout) {
+        lv_obj_align(s_main_view.face, LV_ALIGN_TOP_MID, 0, 86);
+    }
 
     s_main_view.status_label = lv_label_create(s_main_panel);
     if (s_main_view.status_label == NULL) {
@@ -510,7 +624,8 @@ esp_err_t ui_init(void)
     lv_label_set_text(s_main_view.status_label, "待机中");
     lv_obj_set_style_text_font(s_main_view.status_label, ui_main_font(), 0);
     lv_obj_set_style_text_color(s_main_view.status_label, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_align(s_main_view.status_label, LV_ALIGN_TOP_MID, 0, 176);
+    lv_obj_align(s_main_view.status_label, LV_ALIGN_TOP_MID, 0,
+                 use_large_main_layout ? 228 : 176);
 
     s_main_view.hint_label = lv_label_create(s_main_panel);
     if (s_main_view.hint_label == NULL) {
@@ -520,17 +635,24 @@ esp_err_t ui_init(void)
     lv_label_set_text(s_main_view.hint_label, "点击开始对话");
     lv_obj_set_style_text_font(s_main_view.hint_label, ui_main_font(), 0);
     lv_obj_set_style_text_color(s_main_view.hint_label, lv_color_hex(0x94A3B8), 0);
-    lv_obj_align(s_main_view.hint_label, LV_ALIGN_TOP_MID, 0, 196);
+    lv_obj_align(s_main_view.hint_label, LV_ALIGN_TOP_MID, 0,
+                 use_large_main_layout ? 258 : 196);
     /* The 240 px display only has room for one status line above the CTA. */
-    lv_obj_add_flag(s_main_view.hint_label, LV_OBJ_FLAG_HIDDEN);
+    if (!use_large_main_layout) {
+        lv_obj_add_flag(s_main_view.hint_label, LV_OBJ_FLAG_HIDDEN);
+    }
 
     s_main_view.action_btn = lv_btn_create(s_main_panel);
     if (s_main_view.action_btn == NULL) {
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_obj_set_size(s_main_view.action_btn, 168, 34);
-    lv_obj_align(s_main_view.action_btn, LV_ALIGN_BOTTOM_MID, -20, -10);
+    lv_obj_set_size(s_main_view.action_btn,
+                    use_large_main_layout ? 220 : 168,
+                    use_large_main_layout ? 46 : 34);
+    lv_obj_align(s_main_view.action_btn, LV_ALIGN_BOTTOM_MID,
+                 use_large_main_layout ? 0 : -20,
+                 use_large_main_layout ? -54 : -10);
     lv_obj_add_event_cb(s_main_view.action_btn, ui_action_button_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_set_style_bg_color(s_main_view.action_btn, lv_color_hex(0x2563EB), 0);
     lv_obj_set_style_bg_grad_color(s_main_view.action_btn, lv_color_hex(0x7C3AED), 0);
@@ -552,8 +674,12 @@ esp_err_t ui_init(void)
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_obj_set_size(s_main_view.debug_btn, 48, 28);
-    lv_obj_align(s_main_view.debug_btn, LV_ALIGN_BOTTOM_RIGHT, -10, -12);
+    lv_obj_set_size(s_main_view.debug_btn,
+                    use_large_main_layout ? 72 : 48,
+                    use_large_main_layout ? 36 : 28);
+    lv_obj_align(s_main_view.debug_btn, LV_ALIGN_BOTTOM_RIGHT,
+                 use_large_main_layout ? -28 : -10,
+                 use_large_main_layout ? -59 : -12);
     lv_obj_add_event_cb(s_main_view.debug_btn, ui_debug_btn_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_set_style_bg_color(s_main_view.debug_btn, lv_color_hex(0x1F2937), 0);
     lv_obj_set_style_border_width(s_main_view.debug_btn, 1, 0);
@@ -575,8 +701,12 @@ esp_err_t ui_init(void)
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
-    lv_obj_set_size(s_main_view.mode_btn, 48, 28);
-    lv_obj_align(s_main_view.mode_btn, LV_ALIGN_BOTTOM_LEFT, 10, -12);
+    lv_obj_set_size(s_main_view.mode_btn,
+                    use_large_main_layout ? 72 : 48,
+                    use_large_main_layout ? 36 : 28);
+    lv_obj_align(s_main_view.mode_btn, LV_ALIGN_BOTTOM_LEFT,
+                 use_large_main_layout ? 28 : 10,
+                 use_large_main_layout ? -59 : -12);
     lv_obj_add_event_cb(s_main_view.mode_btn, ui_mode_menu_button_event_cb,
                         LV_EVENT_ALL, NULL);
     lv_obj_set_style_bg_color(s_main_view.mode_btn, lv_color_hex(0x1F2937), 0);
@@ -650,6 +780,15 @@ esp_err_t ui_init(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize debug views (%s)", esp_err_to_name(ret));
         goto fail;
+    }
+
+    if (lv_timer_create(ui_speech_animation_timer_cb, 160, NULL) == NULL) {
+        ESP_LOGW(TAG, "Speech mouth animation timer unavailable");
+    }
+    ret = ui_build_splash(lv_scr_act());
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Startup splash unavailable (%s)", esp_err_to_name(ret));
+        ret = ESP_OK;
     }
 
     s_ui_initialized = true;

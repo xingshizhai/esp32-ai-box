@@ -51,3 +51,8 @@ CONFIG_AUDIO_ES7210_I2C_ADDR=0x41
 # components/boards/esp32s3_lcd_ev_board/src/board_display.c). Disable
 # the audio component's own raw-GPIO PA control.
 CONFIG_AUDIO_PA_GPIO=-1
+
+# No IR sensor dock on this board by default -- enable via menuconfig
+# ("Infrared (IR) Hardware Configuration") if one is attached.
+CONFIG_IR_TX_GPIO=-1
+CONFIG_IR_RX_GPIO=-1

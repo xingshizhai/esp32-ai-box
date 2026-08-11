@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include <stdlib.h>
+#include <string.h>
 
 #define TAG "AI_SERVICE"
 
@@ -109,15 +110,30 @@ esp_err_t ai_service_chat_with_history(ai_service_t *service, ai_message_t *mess
     if (service == NULL || messages == NULL || response == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     if (service->chat_with_history == NULL) {
         ESP_LOGE(TAG, "Chat with history function not implemented");
         return ESP_ERR_NOT_SUPPORTED;
     }
-    
+
     ESP_LOGI(TAG, "Chat with history");
-    
+
     return service->chat_with_history(service, messages, response);
+}
+
+esp_err_t ai_service_chat_with_tools(ai_service_t *service, ai_message_t *messages, const char *tools_json, ai_response_t *response) {
+    if (service == NULL || messages == NULL || response == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (service->chat_with_tools != NULL) {
+        ESP_LOGI(TAG, "Chat with tools");
+        return service->chat_with_tools(service, messages, tools_json, response);
+    }
+
+    /* Provider doesn't support tool calling -- fall back to plain history
+     * chat so it keeps working exactly as before. */
+    return ai_service_chat_with_history(service, messages, response);
 }
 
 esp_err_t ai_service_stt(ai_service_t *service, const uint8_t *audio, int len, char **text) {
@@ -158,16 +174,42 @@ esp_err_t ai_service_tts(ai_service_t *service, const char *text, uint8_t **audi
 }
 
 ai_message_t* ai_message_create(const char *role, const char *content) {
-    ai_message_t *msg = (ai_message_t*)malloc(sizeof(ai_message_t));
+    ai_message_t *msg = (ai_message_t*)calloc(1, sizeof(ai_message_t));
     if (msg == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for message");
         return NULL;
     }
-    
+
     msg->role = role ? strdup(role) : strdup("user");
     msg->content = content ? strdup(content) : strdup("");
+    msg->tool_call_id = NULL;
+    msg->tool_call_count = 0;
     msg->next = NULL;
-    
+
+    return msg;
+}
+
+ai_message_t* ai_message_create_tool_result(const char *tool_call_id, const char *content) {
+    ai_message_t *msg = ai_message_create("tool", content);
+    if (msg == NULL) {
+        return NULL;
+    }
+    msg->tool_call_id = tool_call_id ? strdup(tool_call_id) : NULL;
+    return msg;
+}
+
+ai_message_t* ai_message_create_assistant_tool_calls(const ai_tool_call_t *calls, int count) {
+    ai_message_t *msg = ai_message_create("assistant", "");
+    if (msg == NULL) {
+        return NULL;
+    }
+    if (count > AI_MAX_TOOL_CALLS) {
+        count = AI_MAX_TOOL_CALLS;
+    }
+    if (calls != NULL && count > 0) {
+        memcpy(msg->tool_calls, calls, (size_t)count * sizeof(ai_tool_call_t));
+        msg->tool_call_count = count;
+    }
     return msg;
 }
 
@@ -175,12 +217,15 @@ void ai_message_destroy(ai_message_t *msg) {
     if (msg == NULL) {
         return;
     }
-    
+
     if (msg->role) {
         free((void*)msg->role);
     }
     if (msg->content) {
         free((void*)msg->content);
+    }
+    if (msg->tool_call_id) {
+        free((void*)msg->tool_call_id);
     }
     free(msg);
 }

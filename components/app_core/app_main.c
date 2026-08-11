@@ -405,6 +405,9 @@ void app_main(void)
         (void)ui_debug_set_play_record_action_callback(app_runtime_request_debug_play_record);
         (void)ui_debug_set_play_action_callback(app_runtime_request_debug_play);
         (void)ui_debug_set_play_volume_callback(app_runtime_set_debug_play_volume);
+        (void)ui_debug_set_ir_learn_action_callback(app_runtime_request_debug_ir_learn);
+        (void)ui_debug_set_ir_send_action_callback(app_runtime_request_debug_ir_send);
+        (void)ui_debug_set_ir_forget_action_callback(app_runtime_request_debug_ir_forget);
 #if CONFIG_SDCARD_ENABLED
         (void)ui_debug_set_sdcard_action_callback(app_runtime_request_debug_sdcard);
         (void)ui_debug_set_test_audio_action_callback(app_runtime_request_debug_test_audio);

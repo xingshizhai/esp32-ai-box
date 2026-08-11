@@ -38,6 +38,7 @@ typedef struct {
     char *json;
     int json_cap;
     char stt_text[1024];
+    volatile uint32_t stt_result_revision;
     uint8_t *audio;
     int audio_len;
     int audio_cap;
@@ -127,6 +128,7 @@ static void gw_parse_json_event(gw_ws_session_t *session, const char *json)
         cJSON *text = cJSON_GetObjectItemCaseSensitive(sentence, "text");
         if (cJSON_IsString(text) && text->valuestring[0] != '\0') {
             strlcpy(session->stt_text, text->valuestring, sizeof(session->stt_text));
+            ++session->stt_result_revision;
         }
     } else if (strcmp(event_name, "task-finished") == 0) {
         xEventGroupSetBits(session->events, GW_FINISHED_BIT);
@@ -430,6 +432,13 @@ esp_err_t embedded_voice_gateway_stt_send_audio(embedded_voice_gateway_t *gatewa
     int sent = esp_websocket_client_send_bin(gateway->stt->ws, (const char *)pcm, len,
                                              gw_timeout_ticks(gateway));
     return sent == len ? ESP_OK : ESP_FAIL;
+}
+
+uint32_t embedded_voice_gateway_stt_result_revision(embedded_voice_gateway_t *gateway)
+{
+    return (gateway != NULL && gateway->stt != NULL)
+               ? gateway->stt->stt_result_revision
+               : 0;
 }
 
 esp_err_t embedded_voice_gateway_stt_stop(embedded_voice_gateway_t *gateway,

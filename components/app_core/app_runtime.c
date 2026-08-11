@@ -18,6 +18,8 @@
 #include "conversation.h"
 #include "ui.h"
 #include "audio.h"
+#include "device_tools.h"
+#include "ir_ctrl.h"
 #include "voice_session.h"
 #include "voice_gateway_client.h"
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
@@ -48,12 +50,14 @@ extern const uint8_t wake_ack_pcm_end[] asm("_binary_wake_ack_pcm_end");
 /* Two wake modes:
  *   - "未触发" (untriggered): default. Only the "你好小智" WakeNet keyword
  *     starts a round.
- *   - "已唤醒" (awake/conversation): opened for CONVERSATION_FOLLOWUP_MS
+ *   - "已唤醒" (awake/conversation): opened for CONFIG_CONVERSATION_FOLLOWUP_MS
  *     after a round finishes speaking. While open, any VAD-detected speech
  *     starts the next round directly (no wake word needed). If nothing is
  *     said before the window elapses, it silently closes and the device
  *     falls back to requiring the wake word again. */
-#define CONVERSATION_FOLLOWUP_MS (10000)
+#ifndef CONFIG_CONVERSATION_FOLLOWUP_MS
+#define CONFIG_CONVERSATION_FOLLOWUP_MS 10000
+#endif
 /* No AEC on this board: the mic can still pick up the tail/room echo of
  * the device's own TTS playback for a moment right after it "completes".
  * Ignore VAD triggers for this long after the window opens, or that echo
@@ -79,6 +83,9 @@ typedef struct {
     volatile bool debug_record_req;
     volatile bool debug_play_record_req;
     volatile bool debug_play_req;
+    volatile bool debug_ir_learn_req;
+    volatile bool debug_ir_send_req;
+    volatile bool debug_ir_forget_req;
     volatile bool voice_round_req;
     volatile bool initiative_req;
     bool peer_handshake_confirmed;
@@ -114,6 +121,7 @@ static app_runtime_state_t s_runtime = {0};
  * short smart-speaker commands and truncates ordinary sentences; widened to
  * give natural speech room without dragging out short commands too much. */
 #define VOICE_CAPTURE_MS             (7000)
+#define PEER_REPLY_CAPTURE_MS        (20000)
 #define PEER_HANDSHAKE_CAPTURE_MS    (3500)
 #define VOICE_STT_TEXT_MAX           (1024)
 #define VOICE_SESSION_ID_MAX         (64)
@@ -121,6 +129,12 @@ static app_runtime_state_t s_runtime = {0};
 #define STT_DEBUG_PCM_SNAPSHOT_MAX_BYTES (128 * 1024)
 /* HTTPS/mbedtls needs far more stack than the default main task. */
 #define APP_CHAT_WORKER_STACK_SIZE   (24 * 1024)
+
+/* Fixed slug used by the IR debug screen -- it only ever exercises one
+ * code, unlike the AI tool-calling path which lets the model pick names
+ * freely (components/ir_ctrl/ir_ctrl.c). */
+#define IR_DEBUG_CODE_NAME  "debug_test"
+#define IR_DEBUG_LEARN_TIMEOUT_MS (10000)
 
 #ifndef CONFIG_ENABLE_VOICE_WAKEUP
 #define CONFIG_ENABLE_VOICE_WAKEUP 0
@@ -341,6 +355,7 @@ static void app_runtime_mode_selected(int mode_index)
     s_runtime.selected_topic_index = -1;
     s_runtime.session_stop_requested = false;
     s_runtime.role_session_active = false;
+    s_runtime.peer_handshake_confirmed = false;
     (void)app_runtime_reset_role_conversation();
     if (s_runtime.ui_ready) {
         char status[64];
@@ -374,7 +389,14 @@ static const char *app_runtime_select_topic_prompt(const app_role_mode_t *mode)
         return mode != NULL ? mode->initiative_prompt : NULL;
     }
     if (mode->randomize_topics) {
-        s_runtime.selected_topic_index = (int)(esp_random() % (uint32_t)mode->topic_prompt_count);
+        int previous = s_runtime.selected_topic_index;
+        int selected = (int)(esp_random() % (uint32_t)mode->topic_prompt_count);
+        if (mode->topic_prompt_count > 1 && selected == previous) {
+            selected = (selected + 1 +
+                        (int)(esp_random() % (uint32_t)(mode->topic_prompt_count - 1))) %
+                       mode->topic_prompt_count;
+        }
+        s_runtime.selected_topic_index = selected;
     } else {
         s_runtime.selected_topic_index =
             (s_runtime.selected_topic_index + 1) % mode->topic_prompt_count;
@@ -598,17 +620,18 @@ static void app_runtime_mark_activity(void)
 
 /* Called when a voice round finishes speaking: opens (or extends) the
  * "already awake" follow-up window so the next turn doesn't need the wake
- * word, as long as it starts within CONVERSATION_FOLLOWUP_MS. */
+ * word, as long as it starts within CONFIG_CONVERSATION_FOLLOWUP_MS. */
 static void app_runtime_open_conversation_window(void)
 {
     TickType_t now = xTaskGetTickCount();
     s_runtime.conversation_mode_active = true;
-    s_runtime.conversation_deadline_tick = now + pdMS_TO_TICKS(CONVERSATION_FOLLOWUP_MS);
+    s_runtime.conversation_deadline_tick = now + pdMS_TO_TICKS(CONFIG_CONVERSATION_FOLLOWUP_MS);
     s_runtime.conversation_earliest_trigger_tick = now + pdMS_TO_TICKS(CONVERSATION_ECHO_GUARD_MS);
     if (s_runtime.ui_ready) {
         (void)ui_update_status("Listening (no wake word needed)...");
     }
-    ESP_LOGI(TAG, "Conversation window open for %dms (no wake word needed)", CONVERSATION_FOLLOWUP_MS);
+    ESP_LOGI(TAG, "Conversation window open for %dms (no wake word needed)",
+             CONFIG_CONVERSATION_FOLLOWUP_MS);
 }
 
 #if CONFIG_ENABLE_LOCAL_OFFLINE_WAKEUP
@@ -1268,6 +1291,13 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
     }
 
     int total_chunks = (capture_ms + chunk_ms - 1) / chunk_ms;
+    bool speech_seen = false;
+    int speech_ms = 0;
+    int trailing_silence_ms = 0;
+    int noise_floor = 0;
+    int noise_samples = 0;
+    uint32_t stt_result_revision = 0;
+    int stt_result_stable_ms = 0;
     if (trace != NULL) {
         trace->planned_chunks = total_chunks;
     }
@@ -1296,6 +1326,48 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
             app_stt_debug_trace_append_pcm(trace, chunk_buf, pcm_len);
         }
 
+        /* The cloud recognizer is streamed in real time, but capture used to
+         * continue for the full 7/20 second window even after the speaker had
+         * stopped. Detect a local speech endpoint from mean absolute PCM
+         * energy and close the stream after the configured quiet interval.
+         * We deliberately wait until speech has been seen, so initial silence
+         * still gives the user the complete capture window to start talking. */
+        int64_t abs_sum = 0;
+        const int16_t *samples = (const int16_t *)chunk_buf;
+        int sample_count = pcm_len / (int)sizeof(int16_t);
+        for (int sample = 0; sample < sample_count; ++sample) {
+            int32_t value = samples[sample];
+            abs_sum += value < 0 ? -value : value;
+        }
+        int mean_level = sample_count > 0 ? (int)(abs_sum / sample_count) : 0;
+        /* Calibrate against the current room/codec baseline. The LCD-EV
+         * microphone can idle well above a fixed threshold after speaker
+         * playback, which previously made all 20 seconds look like speech. */
+        if (!speech_seen && noise_samples < 4) {
+            noise_floor = noise_samples == 0
+                              ? mean_level
+                              : (noise_floor * noise_samples + mean_level) /
+                                    (noise_samples + 1);
+            ++noise_samples;
+        }
+        int adaptive_margin = noise_floor / 2;
+        if (adaptive_margin < 800) {
+            adaptive_margin = 800;
+        }
+        int speech_threshold = noise_floor + adaptive_margin;
+        if (speech_threshold < CONFIG_PEER_SPEECH_LEVEL_THRESHOLD) {
+            speech_threshold = CONFIG_PEER_SPEECH_LEVEL_THRESHOLD;
+        }
+        bool calibration_done = noise_samples >= 4;
+        bool speech_chunk = calibration_done && mean_level >= speech_threshold;
+        if (speech_chunk) {
+            speech_seen = true;
+            speech_ms += chunk_ms;
+            trailing_silence_ms = 0;
+        } else if (speech_seen) {
+            trailing_silence_ms += chunk_ms;
+        }
+
         err = voice_gateway_stt_send_audio(s_runtime.voice_gateway_client,
                                            session_id,
                                            chunk_buf,
@@ -1312,6 +1384,35 @@ static esp_err_t app_stream_capture_to_gateway_stt(const char *session_id,
         if (trace != NULL) {
             trace->sent_chunks++;
             trace->total_pcm_bytes += pcm_len;
+        }
+
+        /* DashScope publishes partial text while the peer is speaking. Its
+         * revision is a much more reliable speech-presence signal than raw
+         * LCD-EV microphone amplitude. Once non-empty ASR text has stopped
+         * changing for a short interval, finish the stream instead of
+         * waiting for the 20-second safety cap. */
+        uint32_t current_revision =
+            voice_gateway_stt_result_revision(s_runtime.voice_gateway_client);
+        if (current_revision != 0 && current_revision != stt_result_revision) {
+            stt_result_revision = current_revision;
+            stt_result_stable_ms = 0;
+        } else if (stt_result_revision != 0) {
+            stt_result_stable_ms += chunk_ms;
+        }
+        if (stt_result_revision != 0 && stt_result_stable_ms >= 800) {
+            ESP_LOGI(TAG,
+                     "Capture endpoint detected from stable ASR: revision=%lu stable=%dms",
+                     (unsigned long)stt_result_revision, stt_result_stable_ms);
+            break;
+        }
+
+        if (speech_seen && speech_ms >= 200 &&
+            trailing_silence_ms >= CONFIG_VAD_SILENCE_MS) {
+            ESP_LOGI(TAG,
+                     "Capture endpoint detected: speech=%dms silence=%dms level=%d threshold=%d noise=%d",
+                     speech_ms, trailing_silence_ms, mean_level,
+                     speech_threshold, noise_floor);
+            break;
         }
     }
 
@@ -1356,17 +1457,64 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
         goto done;
     }
 
-    ai_message_t *messages = NULL;
-    err = conversation_get_messages(&s_runtime.conversation, &messages);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get message history: %s", esp_err_to_name(err));
-        goto done;
+    ai_response_t response;
+
+    const app_role_profile_t *role = app_role_get();
+    const char *tools_json = role->main_action_initiates_speech
+                                 ? NULL
+                                 : device_tools_get_openai_tools_json();
+
+    /* Round 0: normal request, tools advertised only for the assistant role.
+     * The anti-chat role generates dialogue and must never change device
+     * settings such as volume while composing a question. If the model asks to call
+     * tool(s), execute them, persist the round-trip, and do exactly one
+     * follow-up request so the model can turn the tool result into a natural
+     * spoken reply. Round 1 (the follow-up) ignores any further tool_calls
+     * rather than looping again, to bound worst-case turn latency. */
+    for (int round = 0; round < 2; round++) {
+        ai_message_t *messages = NULL;
+        err = conversation_get_messages(&s_runtime.conversation, &messages);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to get message history: %s", esp_err_to_name(err));
+            goto done;
+        }
+
+        memset(&response, 0, sizeof(response));
+        err = ai_service_chat_with_tools(s_runtime.ai_service, messages,
+                                         tools_json, &response);
+        if (err != ESP_OK || !response.is_success) {
+            break;
+        }
+
+        if (response.tool_call_count == 0) {
+            break;
+        }
+
+        if (round == 1) {
+            ESP_LOGW(TAG, "Model requested tool calls again on the follow-up turn, ignoring");
+            if (response.content[0] == '\0') {
+                strncpy(response.content, "Done.", AI_MAX_RESPONSE_SIZE - 1);
+                response.content[AI_MAX_RESPONSE_SIZE - 1] = '\0';
+            }
+            break;
+        }
+
+        ESP_LOGI(TAG, "AI requested %d tool call(s)", response.tool_call_count);
+        (void)conversation_add_assistant_tool_calls(&s_runtime.conversation,
+                                                     response.tool_calls,
+                                                     response.tool_call_count);
+        for (int i = 0; i < response.tool_call_count; i++) {
+            const ai_tool_call_t *call = &response.tool_calls[i];
+            char result[DEVICE_TOOL_MAX_RESULT];
+            esp_err_t tool_err = device_tools_call(call->name, call->arguments, result, sizeof(result));
+            ESP_LOGI(TAG, "Tool %s(%s) -> %s (%s)", call->name, call->arguments, result,
+                     esp_err_to_name(tool_err));
+            (void)conversation_add_tool_result(&s_runtime.conversation, call->id, result);
+        }
+        /* Loop back for round 1: re-fetches the now tool-result-extended
+         * history and asks the model for its final natural-language reply. */
     }
 
-    ai_response_t response;
-    memset(&response, 0, sizeof(response));
-
-    err = ai_service_chat_with_history(s_runtime.ai_service, messages, &response);
     if (err == ESP_OK && response.is_success && response.content[0] != '\0') {
         ESP_LOGI(TAG, "AI response: %s", response.content);
 
@@ -1384,7 +1532,7 @@ static esp_err_t app_runtime_run_chat_turn(const char *user_text,
              * and convey state through its mood/expression instead; the
              * debug panel's chat view (still text-based, opt-in only) is
              * unaffected. */
-            (void)ui_update_status("Speaking...");
+            (void)ui_update_status("Voice: thinking...");
             (void)ui_show_panel(UI_PANEL_MAIN);
         }
     } else {
@@ -1422,6 +1570,10 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
 
     app_config_t *cfg = config_get();
+    const app_role_profile_t *role = app_role_get();
+    const int capture_ms = role->peer_auto_continue
+                               ? PEER_REPLY_CAPTURE_MS
+                               : VOICE_CAPTURE_MS;
     int sample_rate_hz = (cfg->sampling_rate > 0) ? cfg->sampling_rate : 16000;
     int chunk_ms = cfg->audio_chunk_ms;
 
@@ -1446,7 +1598,7 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
                              session_id,
                              sample_rate_hz,
                              chunk_ms,
-                             VOICE_CAPTURE_MS);
+                             capture_ms);
 
     if (voice_session_get_state(&s_runtime.voice_session) != VOICE_STATE_IDLE) {
         (void)voice_session_handle_event(&s_runtime.voice_session, VOICE_EVENT_RESET, "new voice round");
@@ -1462,7 +1614,7 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     esp_err_t err = app_stream_capture_to_gateway_stt(session_id,
                                                       sample_rate_hz,
                                                       chunk_ms,
-                                                      VOICE_CAPTURE_MS,
+                                                      capture_ms,
                                                       &stt_started,
                                                       &stt_trace,
                                                       NULL,
@@ -1505,7 +1657,10 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
 
     fail_stage = "chat";
+    TickType_t chat_start_tick = xTaskGetTickCount();
     err = app_runtime_run_chat_turn(stt_text, assistant_text, AI_MAX_RESPONSE_SIZE);
+    ESP_LOGI(TAG, "Voice latency: LLM=%ums",
+             app_runtime_elapsed_ms(chat_start_tick, xTaskGetTickCount()));
     if (err != ESP_OK || assistant_text[0] == '\0') {
         if (err == ESP_OK) {
             err = ESP_FAIL;
@@ -1531,8 +1686,11 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
     }
 
     fail_stage = "tts";
+    TickType_t tts_start_tick = xTaskGetTickCount();
     err = app_runtime_synthesize(cfg, session_id, assistant_text,
                                  &tts_audio, &tts_len);
+    ESP_LOGI(TAG, "Voice latency: TTS=%ums audio=%d bytes",
+             app_runtime_elapsed_ms(tts_start_tick, xTaskGetTickCount()), tts_len);
     if (err != ESP_OK || tts_audio == NULL || tts_len <= 0) {
         if (err == ESP_OK) {
             err = ESP_FAIL;
@@ -1540,7 +1698,6 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
         goto fail;
     }
 
-    const app_role_profile_t *role = app_role_get();
     if (role->peer_auto_continue) {
         fail_stage = "peer_silence";
         err = app_runtime_wait_for_peer_silence();
@@ -1558,18 +1715,20 @@ static esp_err_t app_runtime_run_voice_chat_round(void)
                           s_runtime.peer_auto_turns < role->peer_auto_turn_limit;
     s_runtime.peer_reply_expected = arm_peer_reply;
     s_runtime.debug_playback_busy = true;
+    if (s_runtime.ui_ready) {
+        /* audio_stream_play_chunk() may run synchronously until the PCM has
+         * finished. Enter the speaking mood before calling it, otherwise the
+         * mouth starts only after the sound is already over. */
+        (void)ui_update_status("Voice: speaking...");
+        (void)ui_debug_set_playing_state(true);
+        (void)ui_debug_update_status("Voice: speaking...");
+    }
     err = audio_stream_play_chunk(tts_audio, tts_len);
     if (err != ESP_OK) {
         s_runtime.peer_reply_expected = false;
         s_runtime.debug_playback_busy = false;
         goto fail;
     }
-    if (s_runtime.ui_ready) {
-        (void)ui_update_status("Voice: speaking...");
-        (void)ui_debug_set_playing_state(true);
-        (void)ui_debug_update_status("Voice: speaking...");
-    }
-
     app_stt_debug_trace_log(&stt_trace, "ok", ESP_OK, true, stt_text);
     app_stt_debug_trace_deinit(&stt_trace);
     free(tts_audio);
@@ -1899,11 +2058,11 @@ static esp_err_t app_runtime_run_role_initiative(void)
                           s_runtime.peer_auto_turns < role->peer_auto_turn_limit;
     s_runtime.peer_reply_expected = arm_peer_reply;
     s_runtime.debug_playback_busy = true;
+    if (s_runtime.ui_ready) {
+        (void)ui_update_status("正在挑战小智...");
+    }
     err = audio_stream_play_chunk(tts_audio, tts_len);
     if (err == ESP_OK) {
-        if (s_runtime.ui_ready) {
-            (void)ui_update_status("正在挑战小智...");
-        }
     ESP_LOGI(TAG, "Role initiative spoken: role=%s text=%s", role->id, assistant_text);
     } else {
         s_runtime.peer_reply_expected = false;
@@ -1990,8 +2149,15 @@ static void app_handle_voice_round_request(void)
         char status[96] = {0};
         if (role->peer_auto_continue && s_runtime.peer_auto_turns > 0) {
             snprintf(status, sizeof(status), "未识别到小智回复，本轮结束");
+        } else if (err == ESP_ERR_NOT_FOUND) {
+            /* An empty STT result is a normal conversational miss, not a
+             * user-facing system error. Detailed stage/error information is
+             * still available in the STT trace and serial log. */
+            snprintf(status, sizeof(status), "没有听清，请再说一次");
+        } else if (err == ESP_ERR_TIMEOUT) {
+            snprintf(status, sizeof(status), "等待语音超时，请再试一次");
         } else {
-            snprintf(status, sizeof(status), "Voice failed: %s", esp_err_to_name(err));
+            snprintf(status, sizeof(status), "语音服务暂时不可用，请重试");
         }
         (void)ui_update_status(status);
         (void)ui_debug_set_playing_state(false);
@@ -2168,6 +2334,83 @@ static void app_handle_debug_play_request(void)
     } else {
         s_runtime.debug_playback_busy = true;
         ESP_LOGI(TAG, "Debug play: queued %d bytes", queued_len);
+    }
+}
+
+static void app_handle_debug_ir_learn_request(void)
+{
+    s_runtime.is_debug_mode = true;
+    ESP_LOGI(TAG, "Handling debug IR learn request");
+
+    if (s_runtime.ui_ready) {
+        (void)ui_debug_update_ir_status("Learning... point remote and press button (10s)");
+    }
+
+    size_t symbol_count = 0;
+    esp_err_t err = ir_ctrl_learn(IR_DEBUG_CODE_NAME, IR_DEBUG_LEARN_TIMEOUT_MS, &symbol_count);
+    if (!s_runtime.ui_ready) {
+        return;
+    }
+    switch (err) {
+    case ESP_OK: {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Learned %u symbols", (unsigned)symbol_count);
+        (void)ui_debug_update_ir_status(msg);
+        break;
+    }
+    case ESP_ERR_TIMEOUT:
+        (void)ui_debug_update_ir_status("Timeout: no IR signal detected");
+        break;
+    case ESP_ERR_INVALID_STATE:
+        (void)ui_debug_update_ir_status("IR receiver not available (check GPIO config)");
+        break;
+    case ESP_ERR_NO_MEM:
+        (void)ui_debug_update_ir_status("Learned-code table full, forget one first");
+        break;
+    default:
+        (void)ui_debug_update_ir_status("Learn failed");
+        break;
+    }
+}
+
+static void app_handle_debug_ir_send_request(void)
+{
+    s_runtime.is_debug_mode = true;
+    ESP_LOGI(TAG, "Handling debug IR send request");
+
+    esp_err_t err = ir_ctrl_send(IR_DEBUG_CODE_NAME);
+    if (!s_runtime.ui_ready) {
+        return;
+    }
+    switch (err) {
+    case ESP_OK:
+        (void)ui_debug_update_ir_status("Sent");
+        break;
+    case ESP_ERR_NOT_FOUND:
+        (void)ui_debug_update_ir_status("Nothing learned yet -- press Learn first");
+        break;
+    case ESP_ERR_INVALID_STATE:
+        (void)ui_debug_update_ir_status("IR transmitter not available (check GPIO config)");
+        break;
+    default:
+        (void)ui_debug_update_ir_status("Send failed");
+        break;
+    }
+}
+
+static void app_handle_debug_ir_forget_request(void)
+{
+    s_runtime.is_debug_mode = true;
+    ESP_LOGI(TAG, "Handling debug IR forget request");
+
+    esp_err_t err = ir_ctrl_forget(IR_DEBUG_CODE_NAME);
+    if (!s_runtime.ui_ready) {
+        return;
+    }
+    if (err == ESP_OK) {
+        (void)ui_debug_update_ir_status("Forgotten");
+    } else {
+        (void)ui_debug_update_ir_status("Nothing learned yet");
     }
 }
 
@@ -2434,6 +2677,16 @@ esp_err_t app_runtime_init(bool ui_ready)
         return err;
     }
 
+    err = device_tools_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Device tools init failed: %s (AI tool-calling disabled)", esp_err_to_name(err));
+    }
+
+    err = ir_ctrl_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "IR control init failed: %s (IR tools disabled)", esp_err_to_name(err));
+    }
+
     err = app_runtime_initialize_voice_gateway_client();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Voice gateway init skipped: %s", esp_err_to_name(err));
@@ -2462,6 +2715,14 @@ esp_err_t app_runtime_init(bool ui_ready)
     }
 #endif
 
+    if (s_runtime.ui_ready) {
+        /* Bind again after runtime construction.  This also makes the
+         * ownership explicit: the callbacks must be live when the worker is
+         * ready to accept notifications, not merely when LVGL was created. */
+        (void)ui_set_main_action_callback(app_runtime_request_main_action);
+        (void)ui_set_end_session_callback(app_runtime_request_end_session);
+    }
+
     return ESP_OK;
 }
 
@@ -2487,6 +2748,18 @@ void app_runtime_process_requests(void)
     if (s_runtime.debug_play_req) {
         s_runtime.debug_play_req = false;
         app_handle_debug_play_request();
+    }
+    if (s_runtime.debug_ir_learn_req) {
+        s_runtime.debug_ir_learn_req = false;
+        app_handle_debug_ir_learn_request();
+    }
+    if (s_runtime.debug_ir_send_req) {
+        s_runtime.debug_ir_send_req = false;
+        app_handle_debug_ir_send_request();
+    }
+    if (s_runtime.debug_ir_forget_req) {
+        s_runtime.debug_ir_forget_req = false;
+        app_handle_debug_ir_forget_request();
     }
 #if CONFIG_SDCARD_ENABLED
     if (s_runtime.debug_sdcard_req) {
@@ -2611,20 +2884,33 @@ void app_runtime_request_main_action(void)
             }
             return;
         }
-        if (!s_runtime.initiative_req && !s_runtime.is_processing) {
+        if (!s_runtime.initiative_req) {
             s_runtime.peer_auto_turns = 0;
             /* A normal start chooses a fresh mode topic. Silence recovery
              * keeps the current topic through conversation history. */
             s_runtime.peer_reply_expected = false;
+            /* A handshake is valid only inside one role session. The peer
+             * returns to wake-word standby after a session ends, so every
+             * new challenge must say the wake phrase and confirm "我在"
+             * again before sending its first real question. */
+            s_runtime.peer_handshake_confirmed = false;
             s_runtime.session_stop_requested = false;
             s_runtime.role_session_active = true;
             if (s_runtime.ui_ready) {
                 (void)ui_set_session_active(true, role->main_action_label);
+                if (s_runtime.is_processing) {
+                    (void)ui_update_status("正在结束上一轮，即将开始...");
+                }
             }
+            /* Do not silently discard a tap while the previous mode's HTTP
+             * request is unwinding.  The worker notification remains pending
+             * and starts this initiative as soon as that work returns. */
             s_runtime.initiative_req = true;
             if (s_runtime.chat_worker_task != NULL) {
                 (void)xTaskNotifyGive(s_runtime.chat_worker_task);
             }
+            ESP_LOGI(TAG, "Role initiative requested%s",
+                     s_runtime.is_processing ? " (queued behind active request)" : "");
         }
         return;
     }
@@ -2637,6 +2923,7 @@ void app_runtime_request_end_session(void)
     s_runtime.session_stop_requested = true;
     s_runtime.role_session_active = false;
     s_runtime.peer_reply_expected = false;
+    s_runtime.peer_handshake_confirmed = false;
     s_runtime.voice_round_req = false;
     s_runtime.initiative_req = false;
     s_runtime.peer_auto_turns = role->peer_auto_turn_limit;
@@ -2658,15 +2945,18 @@ void app_runtime_request_mode_menu(void)
     if (role->modes == NULL || role->mode_count <= 0) {
         return;
     }
-    if (s_runtime.role_session_active || s_runtime.is_processing ||
-        s_runtime.initiative_req || s_runtime.peer_reply_expected) {
-        app_runtime_request_end_session();
-    }
+
+    /* Returning to mode selection is a hard session boundary.  Keep the
+     * stop request asserted while the menu is open so an in-flight worker
+     * cannot resume the previous mode.  app_runtime_mode_selected() clears
+     * it only after the user has explicitly chosen the next mode. */
+    app_runtime_request_end_session();
     s_runtime.selected_mode_index = -1;
-    s_runtime.session_stop_requested = false;
+    s_runtime.selected_topic_index = -1;
+    s_runtime.peer_handshake_confirmed = false;
     (void)app_runtime_reset_role_conversation();
     app_runtime_show_mode_menu();
-    ESP_LOGI(TAG, "Returned to role mode menu");
+    ESP_LOGI(TAG, "Current session ended; returned to role mode menu");
 }
 
 void app_runtime_request_debug_record(void)
@@ -2690,6 +2980,24 @@ void app_runtime_set_debug_play_volume(int volume)
 {
     ESP_LOGI(TAG, "Debug playback volume set to %d", volume);
     (void)audio_set_volume(volume);
+}
+
+void app_runtime_request_debug_ir_learn(void)
+{
+    ESP_LOGI(TAG, "Debug IR learn action requested");
+    s_runtime.debug_ir_learn_req = true;
+}
+
+void app_runtime_request_debug_ir_send(void)
+{
+    ESP_LOGI(TAG, "Debug IR send action requested");
+    s_runtime.debug_ir_send_req = true;
+}
+
+void app_runtime_request_debug_ir_forget(void)
+{
+    ESP_LOGI(TAG, "Debug IR forget action requested");
+    s_runtime.debug_ir_forget_req = true;
 }
 
 void app_runtime_handle_network_state(net_state_t state, void *user_data)
@@ -2796,7 +3104,7 @@ void app_runtime_handle_audio_playback_complete(void)
          * the conversation window here both fixes that (it sets its own
          * status text) and starts the "already awake" follow-up period:
          * the next turn doesn't need the wake word as long as it starts
-         * within CONVERSATION_FOLLOWUP_MS. */
+         * within CONFIG_CONVERSATION_FOLLOWUP_MS. */
         app_runtime_open_conversation_window();
     }
 
@@ -2826,6 +3134,7 @@ void app_runtime_handle_audio_playback_complete(void)
     if (role->peer_auto_continue && s_runtime.role_session_active &&
         s_runtime.peer_auto_turns >= role->peer_auto_turn_limit) {
         s_runtime.role_session_active = false;
+        s_runtime.peer_handshake_confirmed = false;
         if (s_runtime.ui_ready) {
             (void)ui_set_session_active(false, role->main_action_label);
             (void)ui_update_status("会话轮次完成");

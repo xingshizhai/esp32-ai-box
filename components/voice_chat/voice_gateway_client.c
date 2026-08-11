@@ -619,6 +619,14 @@ esp_err_t voice_gateway_stt_send_audio(voice_gateway_client_t *client,
     return ESP_OK;
 }
 
+uint32_t voice_gateway_stt_result_revision(voice_gateway_client_t *client)
+{
+    if (client == NULL || !client->embedded || client->embedded_gateway == NULL) {
+        return 0;
+    }
+    return embedded_voice_gateway_stt_result_revision(client->embedded_gateway);
+}
+
 esp_err_t voice_gateway_stt_stop(voice_gateway_client_t *client,
                                  const char *session_id,
                                  char *out_text,
